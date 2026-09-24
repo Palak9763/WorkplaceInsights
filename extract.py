@@ -1,8 +1,7 @@
 """
 Calls qwen2.5:3b-instruct via Ollama to extract entities + relationships
-from a chunk of text. Includes the retry loop we discussed - if the
-model returns malformed JSON, we re-prompt with the error, up to
-MAX_RETRIES times, before giving up on that chunk.
+from a chunk of text. Retries on: malformed JSON, wrong schema types,
+OR a relationship referencing an entity that wasn't independently listed.
 """
 import json
 import ollama
@@ -11,7 +10,6 @@ from config import OLLAMA_HOST, EXTRACTION_MODEL
 from schema import validate_extraction, ExtractionResult
 
 MAX_RETRIES = 3
-
 SYSTEM_PROMPT = """You extract entities and relationships from text into JSON.
 
 Allowed entity types: Person, Project, Technology, Service, Incident
@@ -23,18 +21,26 @@ no preamble, no explanation, no markdown code fences:
 {"entities": [{"type": "Person", "name": "...", "location": "..."}],
  "relationships": [{"from": "...", "type": "WORKS_ON", "to": "..."}]}
 
-Rules:
-- Only extract what is explicitly stated. Do not infer relationships
-  that aren't directly supported by the text.
-- "location" is optional - omit it entirely for non-Person entities,
-  or if a Person's location isn't mentioned.
-- Use the exact entity names as they appear in the source text so they
-  can be matched consistently across documents.
+CRITICAL RULES:
+1. Every name in "relationships" (from/to) MUST also appear as its own
+   entry in "entities". Never reference a name without listing it.
+2. Every entity in "entities" MUST be connected by at least one
+   relationship. Never list an entity that isn't actually related to
+   anything else in the text - if it has no relationship, leave it out
+   entirely instead.
+3. Never invent placeholder names like "Unknown", "N/A", or generic
+   labels. Only extract names that are explicitly written in the text.
+4. Only extract what is explicitly stated - do not infer relationships
+   that aren't directly supported by the text.
+5. "location" is optional - omit it for non-Person entities.
 
 Example:
-Text: "Priya Sharma (London) led the backend migration for Project Atlas."
-Output: {"entities": [{"type": "Person", "name": "Priya Sharma", "location": "London"}, {"type": "Project", "name": "Project Atlas"}], "relationships": [{"from": "Priya Sharma", "type": "WORKS_ON", "to": "Project Atlas"}]}
+Text: "Project Atlas uses PostgreSQL as its database."
+Output: {"entities": [{"type": "Project", "name": "Project Atlas"}, {"type": "Technology", "name": "PostgreSQL"}], "relationships": [{"from": "Project Atlas", "type": "USES", "to": "PostgreSQL"}]}
+Both entities are connected by the USES relationship - nothing is orphaned, nothing is a placeholder.
 """
+
+
 
 
 def _call_model(text: str, error_context: str = "") -> str:
@@ -49,22 +55,17 @@ def _call_model(text: str, error_context: str = "") -> str:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ],
-        options={"temperature": 0.1},  # low temperature - we want consistent, literal extraction, not creativity
+        options={"temperature": 0.1},
     )
     return response["message"]["content"]
 
 
 def extract(text: str, chunk_id: str = "") -> ExtractionResult | None:
-    """
-    Extract entities/relationships from a chunk of text.
-    Returns None if extraction fails after MAX_RETRIES attempts.
-    """
     error_context = ""
 
     for attempt in range(1, MAX_RETRIES + 1):
         raw_output = _call_model(text, error_context)
 
-        # Models sometimes wrap JSON in markdown fences despite instructions - strip if present
         cleaned = raw_output.strip()
         if cleaned.startswith("```"):
             cleaned = cleaned.split("```")[1]
@@ -79,13 +80,14 @@ def extract(text: str, chunk_id: str = "") -> ExtractionResult | None:
             error_context = f"JSON parse error: {e}. Raw output was: {raw_output[:200]}"
             continue
 
-        result = validate_extraction(parsed)
+        result, error = validate_extraction(parsed)
         if result is not None:
             print(f"  [attempt {attempt}/{MAX_RETRIES}] Extracted {len(result.entities)} entities, "
                   f"{len(result.relationships)} relationships.")
             return result
 
-        error_context = "JSON parsed but didn't match the required schema (check entity/relationship types)."
+        print(f"  [attempt {attempt}/{MAX_RETRIES}] Validation failed: {error}")
+        error_context = error
 
     print(f"  FAILED after {MAX_RETRIES} attempts on chunk '{chunk_id}'. Flagging for manual review.")
     return None
