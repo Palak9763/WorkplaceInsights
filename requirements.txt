@@ -1,5 +1,7 @@
-neo4j==5.24.0
-qdrant-client==1.11.3
-python-dotenv==1.0.1
-ollama==0.3.3
-pydantic==2.9.2
+fastapi==0.115.0
+uvicorn==0.31.0
+python-multipart==0.0.12
+pymupdf==1.24.11
+python-docx==1.1.2
+pandas==2.2.3
+openpyxl==3.1.5
