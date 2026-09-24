@@ -1,10 +1,6 @@
 """
 Shared config loader.
 All scripts import from here so connection details live in one place (.env).
-
-This version assumes LOCAL setup:
-- Neo4j Desktop running on bolt://localhost:7687
-- Qdrant running locally on localhost:6333
 """
 import os
 from dotenv import load_dotenv
@@ -16,9 +12,9 @@ NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "your-password-here")
 
-# --- Qdrant (local) ---
-QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
-QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
+# --- Qdrant Cloud ---
+QDRANT_URL = os.getenv("QDRANT_URL", "")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "graphrag_chunks")
 
 # --- Ollama ---
