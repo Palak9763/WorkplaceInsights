@@ -1,0 +1,5 @@
+neo4j==5.24.0
+qdrant-client==1.11.3
+python-dotenv==1.0.1
+ollama==0.3.3
+pydantic==2.9.2
