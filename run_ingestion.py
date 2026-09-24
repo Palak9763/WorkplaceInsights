@@ -67,7 +67,7 @@ def main():
     print("Ingestion complete.")
     print("\nCheck your results:")
     print("  Neo4j Browser (Desktop) -> run: MATCH (n) RETURN n LIMIT 50")
-    print("  Qdrant Dashboard -> http://localhost:6333/dashboard")
+    print("  Qdrant Dashboard -> https://cloud.qdrant.io (open your cluster, then Dashboard tab)")
 
 
 if __name__ == "__main__":
