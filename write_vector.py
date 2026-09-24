@@ -1,11 +1,11 @@
 """
-Writes a text chunk + its real embedding + metadata into Qdrant.
+Writes a text chunk + its real embedding + metadata into Qdrant Cloud.
 """
 import hashlib
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
 
-from config import QDRANT_HOST, QDRANT_PORT, QDRANT_COLLECTION
+from config import QDRANT_URL, QDRANT_API_KEY, QDRANT_COLLECTION
 from embed import embed
 
 VECTOR_SIZE = 768  # nomic-embed-text output dimension
@@ -27,7 +27,7 @@ def _chunk_id(text: str) -> int:
 
 
 def write_to_vector_store(text: str, source: str = "", date: str = ""):
-    client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
+    client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
     _ensure_collection(client)
 
     vector = embed(text)
