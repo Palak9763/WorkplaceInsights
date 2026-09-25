@@ -25,19 +25,15 @@ STRICT RULES:
 7. Preserve the exact entity names from the text.
 8. Choose the relationship type based strictly on the wording of the text.
 9. If an entity has no clearly supported relationship, do NOT include that entity.
-10. Do not use WORKS_ON unless the text explicitly says that a person/team/project works on something.
-11. Do not use USES unless the text explicitly states that something uses another entity.
-12. Do not use DEPENDS_ON unless the text explicitly states dependency.
-13. Do not use RUNS_ON unless the text explicitly states that something runs on another entity.
-14. Do not connect Project Mercury to Payment Service unless the text explicitly states that dependency.
-15. Before returning the answer, verify that every relationship endpoint exists in the entities list.
+10. Before returning the answer, verify that every relationship endpoint exists in the entities list.
+11. You can dynamically use any entity type or relationship type as long as it fits the text.
 
 Return ONLY valid JSON in exactly this format:
 
 {
   "entities": [
     {
-      "type": "Project|Person|Team|Service|Technology|Incident|Decision|Meeting|Department",
+      "type": "ENTITY_TYPE",
       "name": "exact entity name"
     }
   ],
@@ -70,24 +66,29 @@ def _call_model(text: str, error_context: str = "") -> str:
     return response["message"]["content"]
 
 
-def ground_extraction(result: ExtractionResult) -> ExtractionResult:
+def ground_extraction(result: ExtractionResult):
     seen_entities = {}
     grounded_entities = []
+    rejected_entities = []
     
     for e in result.entities:
         norm_name = _normalize(e.name)
         if norm_name not in seen_entities:
             seen_entities[norm_name] = e
             grounded_entities.append(e)
+        else:
+            rejected_entities.append(e)
             
     seen_relationships = set()
     grounded_relationships = []
+    rejected_relationships = []
     
     for r in result.relationships:
         norm_from = _normalize(r.from_)
         norm_to = _normalize(r.to)
         
         if norm_from not in seen_entities or norm_to not in seen_entities:
+            rejected_relationships.append(r)
             continue
             
         r.from_ = seen_entities[norm_from].name
@@ -97,8 +98,10 @@ def ground_extraction(result: ExtractionResult) -> ExtractionResult:
         if rel_key not in seen_relationships:
             seen_relationships.add(rel_key)
             grounded_relationships.append(r)
+        else:
+            rejected_relationships.append(r)
             
-    return ExtractionResult(entities=grounded_entities, relationships=grounded_relationships)
+    return ExtractionResult(entities=grounded_entities, relationships=grounded_relationships), rejected_entities, rejected_relationships
 
 
 def extract(text: str, chunk_id: str = "") -> ExtractionResult | None:
@@ -151,11 +154,30 @@ def extract(text: str, chunk_id: str = "") -> ExtractionResult | None:
             print("✓ Extraction valid")
             print()
             
-            grounded_result = ground_extraction(result)
+            grounded_result, rejected_entities, rejected_relationships = ground_extraction(result)
             
             print("==================================================")
-            print("GROUNDED EXTRACTION")
+            print("DYNAMIC GROUNDING")
             print("==================================================")
+            print()
+            print("Accepted entities:")
+            for e in grounded_result.entities:
+                print(f"- {e}")
+            print("\nRejected entities:")
+            for e in rejected_entities:
+                print(f"- {e}")
+            print("\nAccepted relationships:")
+            for r in grounded_result.relationships:
+                print(f"- {r}")
+            print("\nRejected relationships:")
+            for r in rejected_relationships:
+                print(f"- {r}")
+            print()
+            
+            print("==================================================")
+            print("FINAL GRAPH DATA")
+            print("==================================================")
+            print()
             print("Entities:")
             for e in grounded_result.entities:
                 print(f"- {e}")

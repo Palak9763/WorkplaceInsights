@@ -7,7 +7,7 @@ import re
 from pydantic import BaseModel, ValidationError
 from typing import List, Literal
 
-EntityType = Literal["Person", "Project", "Technology", "Service", "Incident"]
+
 
 # Names that are almost always hallucinations/placeholders, not real entities
 BLACKLISTED_NAMES = {
@@ -18,7 +18,7 @@ BLACKLISTED_NAMES = {
 
 
 class Entity(BaseModel):
-    type: EntityType
+    type: str
     name: str
     location: str | None = None
 
@@ -69,6 +69,10 @@ def validate_extraction(raw_json: dict) -> tuple[ExtractionResult | None, str | 
     for rel in result.relationships:
         if not rel.type.strip():
             return None, "Relationship 'type' cannot be empty or just whitespace."
+
+    for ent in result.entities:
+        if not ent.type.strip():
+            return None, "Entity 'type' cannot be empty or just whitespace."
 
     # Check 2: blacklisted/placeholder names
     bad_names = [

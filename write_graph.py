@@ -32,9 +32,13 @@ def write_to_graph(result: ExtractionResult, source: str = ""):
         #    original nicely-formatted name as the display name
         for entity in result.entities:
             key = normalize_name(entity.name)
+            safe_type = entity.type.replace("`", "").strip()
+            if not safe_type:
+                continue
+                
             session.run(
                 f"""
-                MERGE (n:{entity.type} {{name_key: $key}})
+                MERGE (n:`{safe_type}` {{name_key: $key}})
                 ON CREATE SET n.name = $name
                 SET n.location = $location, n.last_seen_source = $source
                 """,
