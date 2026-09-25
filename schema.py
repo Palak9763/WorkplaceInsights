@@ -8,7 +8,6 @@ from pydantic import BaseModel, ValidationError
 from typing import List, Literal
 
 EntityType = Literal["Person", "Project", "Technology", "Service", "Incident"]
-RelationshipType = Literal["WORKS_ON", "USES", "CAUSED_DELAY_TO", "INVOLVED"]
 
 # Names that are almost always hallucinations/placeholders, not real entities
 BLACKLISTED_NAMES = {
@@ -26,7 +25,7 @@ class Entity(BaseModel):
 
 class Relationship(BaseModel):
     from_: str
-    type: RelationshipType
+    type: str
     to: str
 
     class Config:
@@ -66,6 +65,10 @@ def validate_extraction(raw_json: dict) -> tuple[ExtractionResult | None, str | 
         result = ExtractionResult(**raw_json)
     except ValidationError as e:
         return None, f"JSON parsed but didn't match the schema: {e}"
+        
+    for rel in result.relationships:
+        if not rel.type.strip():
+            return None, "Relationship 'type' cannot be empty or just whitespace."
 
     # Check 2: blacklisted/placeholder names
     bad_names = [

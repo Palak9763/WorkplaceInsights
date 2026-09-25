@@ -65,11 +65,15 @@ def write_to_graph(result: ExtractionResult, source: str = ""):
                       f"(from_key='{from_key}', to_key='{to_key}')")
                 continue
 
+            safe_type = rel.type.replace("`", "").strip()
+            if not safe_type:
+                continue
+
             session.run(
                 f"""
                 MATCH (a {{name_key: $from_key}})
                 MATCH (b {{name_key: $to_key}})
-                MERGE (a)-[:{rel.type}]->(b)
+                MERGE (a)-[:`{safe_type}`]->(b)
                 """,
                 from_key=from_key,
                 to_key=to_key,

@@ -1,6 +1,6 @@
 """
 Extracts plain text from different file formats.
-PDF/DOCX/images -> prose text (Path A, goes through LLM extraction).
+PDF/DOCX/Markdown/images -> prose text (Path A, goes through LLM extraction).
 Excel/CSV -> structured rows (Path B, converted to sentences directly).
 """
 import fitz  # PyMuPDF
@@ -47,6 +47,10 @@ def parse_image(file_bytes: bytes) -> str:
     return read_image_text(file_bytes)
 
 
+def parse_markdown(file_bytes: bytes) -> str:
+    return file_bytes.decode("utf-8-sig")
+
+
 def parse_excel_or_csv(file_bytes: bytes, filename: str) -> list[str]:
     """
     Returns a list of sentence-ified rows (Path B - structured data).
@@ -80,6 +84,8 @@ def parse_file(filename: str, file_bytes: bytes) -> dict:
         return {"mode": "prose", "text": parse_pdf(file_bytes)}
     elif ext == "docx":
         return {"mode": "prose", "text": parse_docx(file_bytes)}
+    elif ext == "md":
+        return {"mode": "prose", "text": parse_markdown(file_bytes)}
     elif ext in ("png", "jpg", "jpeg", "webp"):
         return {"mode": "prose", "text": parse_image(file_bytes)}
     elif ext in ("xlsx", "xls", "csv"):
