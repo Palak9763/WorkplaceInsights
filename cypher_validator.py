@@ -1,4 +1,3 @@
-from msilib import schema
 import re
 
 def validate_cypher(cypher: str, schema: dict) -> tuple[bool, str]:
@@ -14,9 +13,7 @@ def validate_cypher(cypher: str, schema: dict) -> tuple[bool, str]:
             return False, f"Forbidden clause '{word}' found in query."
             
     # b) Validate labels and relationship types
-    tokens_after_colon = set(re.findall(r":`([^`]+)`|:([A-Za-z0-9_]+)", cypher))
-    tokens_after_colon = {a or b for a, b in tokens_after_colon}
-   
+    tokens_after_colon = set(re.findall(r":`?([A-Za-z0-9_]+)`?", cypher))
     
     valid_labels = set(schema.get("labels", []))
     valid_rels = set(schema.get("relationship_types", []))
