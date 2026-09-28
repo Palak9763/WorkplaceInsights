@@ -76,11 +76,58 @@ it (August and September), since chunk 3 added a second outage.
 `graphrag_chunks` collection — you should see 3 points, each with real
 768-dimension embeddings and the source/date metadata.
 
-## Next steps
+## Query Orchestration Pipeline
 
-Once this looks right on the sample chunks, swap `SAMPLE_CHUNKS` in
-`run_ingestion.py` for your actual documents (or wire up a real
-ingestion layer with connectors/parsers/chunker for Confluence, Slack,
-etc.). After that, the next piece to build is Query Orchestration —
-taking a live question and routing it to graph, vector, or both. Ask
-when you're ready for that one.
+The query pipeline dynamically discovers graph schema and routes user questions to Cypher graph traversal, vector retrieval, or hybrid synthesis with anti-hallucination fact checking.
+
+### Architecture Overview
+
+```
+User Query
+    │
+    ▼
+[query_classifier.py] ──> Decides route: "graph" | "vector" | "hybrid"
+    │
+    ├── (Graph Route) ──> [entity_linker.py] ──> Discovers anchor nodes via full-text / n-gram
+    │                     [cypher_generator.py] ──> Generates Cypher using live Neo4j schema
+    │                     [cypher_validator.py] ──> Validates AST/schema labels/safe read-only
+    │                     [retrieval.py] ──> Executes Cypher against Neo4j with fallback
+    │
+    ├── (Vector Route) ──> [retrieval.py] ──> Embeds query & searches Qdrant
+    │
+    └── (Reasoning / Synthesizer) ──> [reasoning.py]
+                                      ├── Synthesizes context into natural answer
+                                      └── Anti-hallucination check (flags unsupported facts)
+```
+
+### Key Modules
+
+- `graph_schema.py`: Dynamic schema discovery via `CALL db.labels()`, `CALL db.relationshipTypes()`, and `db.schema.visualization()`. Cached with configurable TTL.
+- `entity_linker.py`: Schema-agnostic anchor discovery using Neo4j full-text indexes and n-gram substring searches.
+- `query_classifier.py`: Dynamic few-shot routing based on live schema relationships and node samples.
+- `cypher_generator.py`: Generates safe read-only Cypher queries strictly conforming to live schema.
+- `cypher_validator.py`: Enforces read-only safety, valid labels/rel types, and row limit constraints.
+- `retrieval.py`: Orchestrates dual retrieval (Neo4j graph traversal + Qdrant vector search).
+- `reasoning.py`: LLM synthesis and hallucination detection against retrieved facts.
+- `ingest_api.py`: FastAPI server exposing `/query`, `/ingest/raw`, and `/schema` endpoints.
+- `eval.py`: Automated evaluation harness testing graph, vector, and hybrid questions.
+
+### Running the API & Evaluation
+
+1. **Start the API Server**:
+   ```bash
+   uvicorn ingest_api:app --reload --port 8000
+   ```
+
+2. **Query the API**:
+   ```bash
+   curl -X POST http://127.0.0.1:8000/query \
+     -H "Content-Type: application/json" \
+     -d '{"question": "What technologies are used in our projects?"}'
+   ```
+
+3. **Run Evaluation Harness**:
+   ```bash
+   python eval.py --questions eval_questions.json --url http://127.0.0.1:8000
+   ```
+
