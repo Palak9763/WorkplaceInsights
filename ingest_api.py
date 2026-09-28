@@ -8,17 +8,6 @@ Then upload via http://localhost:8000/docs (FastAPI's built-in test UI)
 """
 from datetime import date
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from pydantic import BaseModel
-
-from graph_schema import get_live_schema
-from query_classifier import classify_query
-from cypher_generator import generate_cypher
-from cypher_validator import validate_cypher
-from retrieval import graph_retrieve, vector_retrieve
-from reasoning import generate_answer
-
-class QueryRequest(BaseModel):
-    question: str
 
 from parsers import parse_file
 from chunker import chunk_text
@@ -77,63 +66,3 @@ async def ingest_file(file: UploadFile = File(...)):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
-
-
-@app.post("/query")
-async def query_endpoint(req: QueryRequest):
-    question = req.question
-    print(f"--- Processing Query: '{question}' ---")
-    
-    # 1. Classify
-    classification = classify_query(question)
-    print(f"Classification: {classification}")
-    
-    cypher_used = None
-    graph_results = []
-    vector_results = []
-    
-    # 2. Graph Retrieval
-    if classification in ["graph", "hybrid"]:
-        schema = get_live_schema()
-        print("Fetched live graph schema.")
-        
-        cypher = generate_cypher(question, schema)
-        print(f"Generated Cypher:\n{cypher}")
-        
-        is_valid, cypher_or_err = validate_cypher(cypher, schema)
-        
-        if not is_valid:
-            print(f"Validation failed: {cypher_or_err}. Retrying once...")
-            # Retry generation with error message fed back
-            error_msg = cypher_or_err
-            retry_question = f"{question} (Note: Your previous Cypher failed validation with error: {error_msg}. Please fix it.)"
-            cypher = generate_cypher(retry_question, schema)
-            print(f"Retry Generated Cypher:\n{cypher}")
-            is_valid, cypher_or_err = validate_cypher(cypher, schema)
-            
-        if is_valid:
-            cypher_used = cypher_or_err
-            print("Validation passed. Running graph retrieval...")
-            graph_results = graph_retrieve(cypher_used)
-            print(f"Graph retrieval returned {len(graph_results)} results.")
-        else:
-            print(f"Validation failed again on retry: {cypher_or_err}. Skipping graph retrieval.")
-            
-    # 3. Vector Retrieval
-    if classification in ["vector", "hybrid"]:
-        print("Running vector retrieval...")
-        vector_results = vector_retrieve(question)
-        print(f"Vector retrieval returned {len(vector_results)} chunks.")
-        
-    # 4. Reasoning
-    print("Generating answer...")
-    answer = generate_answer(question, graph_results, vector_results)
-    print("Answer generated.")
-    
-    return {
-        "answer": answer,
-        "classification": classification,
-        "cypher_used": cypher_used,
-        "graph_results": graph_results,
-        "vector_results": vector_results
-    }
