@@ -16,7 +16,7 @@ Returns (answer: str, grounding_warning: list[str])
 import re
 import json
 import ollama
-from config import OLLAMA_HOST, EXTRACTION_MODEL
+from config import OLLAMA_HOST, REASONING_MODEL
 
 _NOT_ENOUGH = "I don't have enough information to answer that."
 
@@ -25,16 +25,10 @@ You are a precise question-answering assistant.
 
 RULES (follow strictly):
 1. Answer using ONLY the Graph Facts and Document Chunks provided below.
-2. Do NOT use your training knowledge. If the context does not answer the question, say so.
-3. Prefer graph facts over text chunks when they conflict.
-4. Attribute each claim only to the specific subject the source names.
-5. If graph facts are present but incomplete, say only that the retrieved context does
-   not mention additional details — do not claim nothing else exists.
-6. Inline-cite every claim:
-   - Graph fact:  [Graph: <sentence>]
-   - Document:    [Source: <source_name>]
-7. Keep the answer to 2-3 sentences with citations. Be concise and factual.
-8. Never invent names, relationships, or numbers not present in the context.
+2. Attribute each claim only to the specific subject, date, and document where it appears.
+3. Inline-cite every claim using [Source: <source_name>] or [Graph: <sentence>].
+4. COMPREHENSIVENESS / MULTI-EVENT SYNTHESIS: If the context describes multiple distinct incidents, outages, or delays across different dates/times (for example, an August delay AND a September delay), your answer MUST report BOTH separate events with their specific details (dates, durations, causes, and impacts). Never omit or drop one event in favor of another.
+5. Keep the answer concise, factual, and complete. Never invent details not in the context.
 """
 
 
@@ -60,18 +54,29 @@ def _rows_to_sentences(rows: list[dict]) -> list[str]:
     return sentences
 
 
+_IGNORE_META_TOKENS = {
+    "source", "graph", "according", "based", "the", "in", "this", "there",
+    "yes", "no", "none", "confluence", "slack", "upload", "doc", "document"
+}
+
+
 def _extract_suspicious_tokens(answer: str) -> list[str]:
     """
-    Extracts capitalized words/phrases and numbers from the answer
-    that could be invented hallucinations.
+    Extracts capitalized words/phrases and numbers from the answer prose
+    (excluding bracketed inline citations) that could be invented hallucinations.
     """
+    # Strip bracketed citations first, e.g. [Source: ...] or [Graph: ...]
+    clean_prose = re.sub(r"\[(?:Source|Graph):[^\]]*\]", "", answer)
+
     tokens: list[str] = []
     # Multi-word capitalized names
-    for m in re.finditer(r"\b([A-Z][a-zA-Z0-9]*)(?:\s+[A-Z][a-zA-Z0-9]*)*\b", answer):
-        tokens.append(m.group(0))
+    for m in re.finditer(r"\b([A-Z][a-zA-Z0-9]*)(?:\s+[A-Z][a-zA-Z0-9]*)*\b", clean_prose):
+        tok = m.group(0).strip()
+        if tok.lower() not in _IGNORE_META_TOKENS and len(tok) > 1:
+            tokens.append(tok)
     # Standalone numbers
-    for m in re.finditer(r"\b\d+(?:\.\d+)?\b", answer):
-        tokens.append(m.group(0))
+    for m in re.finditer(r"\b\d+(?:\.\d+)?\b", clean_prose):
+        tokens.append(m.group(0).strip())
     # Deduplicate
     seen: set[str] = set()
     result = []
@@ -92,10 +97,18 @@ def _call_llm(question: str, graph_sentences: list[str], vector_results: list[di
         "\n".join(f"  {i+1}. {s}" for i, s in enumerate(graph_sentences))
         if graph_sentences else "  (none)"
     )
-    vector_block = (
-        json.dumps(vector_results, indent=2, default=str)
-        if vector_results else "  (none)"
-    )
+
+    vector_lines = []
+    if vector_results:
+        for i, c in enumerate(vector_results, start=1):
+            src = c.get("source", "unknown")
+            dt = c.get("date", "unknown")
+            txt = c.get("text", "")
+            vector_lines.append(f"[Document {i}] (Source: {src}, Date: {dt}):\n{txt}")
+        vector_block = "\n\n".join(vector_lines)
+    else:
+        vector_block = "  (none)"
+
     forbidden_note = ""
     if forbidden:
         forbidden_note = (
@@ -108,18 +121,23 @@ def _call_llm(question: str, graph_sentences: list[str], vector_results: list[di
         f"GRAPH FACTS:\n{graph_block}\n\n"
         f"DOCUMENT CHUNKS:\n{vector_block}"
         f"{forbidden_note}\n\n"
-        "Write a concise answer with inline citations:"
+        "Write a concise answer with inline citations, making sure to report all distinct incidents/events found:"
     )
+
+    print(f"\n[reasoning] === SYSTEM PROMPT ===\n{_SYSTEM_PROMPT}")
+    print(f"\n[reasoning] === USER PROMPT ===\n{user_prompt}\n")
+
     client = ollama.Client(host=OLLAMA_HOST)
     response = client.chat(
-        model=EXTRACTION_MODEL,
+        model=REASONING_MODEL,
         messages=[
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ],
-        options={"temperature": 0.2},
+        options={"temperature": 0.1},
     )
     return response["message"]["content"].strip()
+
 
 
 def generate_answer(

@@ -108,6 +108,13 @@ def _ngram_match(question: str, label_samples: dict[str, list[str]]) -> list[dic
 # Public API
 # ---------------------------------------------------------------------------
 
+def _sanitize_lucene_query(text: str) -> str:
+    """Strips special Lucene characters that break full-text search."""
+    cleaned = re.sub(r'[\+\-\&\|\!\(\)\{\}\[\]\^\"~*?:\\/]', ' ', text)
+    tokens = [t for t in cleaned.split() if len(t) > 1]
+    return " ".join(tokens)
+
+
 def link_entities(question: str, schema: dict) -> list[dict]:
     """
     Links the question text to real graph nodes.
@@ -130,45 +137,61 @@ def link_entities(question: str, schema: dict) -> list[dict]:
             index_available = _ensure_fulltext_index(session, labels)
 
             if index_available:
-                try:
-                    result = session.run(
-                        f"""
-                        CALL db.index.fulltext.queryNodes($idx, $q)
-                        YIELD node, score
-                        WHERE score >= $min_score
-                        RETURN elementId(node) AS element_id,
-                               node.name        AS name,
-                               labels(node)     AS labels,
-                               score
-                        ORDER BY score DESC
-                        LIMIT $top_k
-                        """,
-                        idx=_INDEX_NAME,
-                        q=question,
-                        min_score=ENTITY_LINK_MIN_SCORE,
-                        top_k=ENTITY_LINK_TOP_K,
-                    )
-                    for rec in result:
-                        anchors.append({
-                            "element_id": rec["element_id"],
-                            "name": rec["name"],
-                            "labels": list(rec["labels"]),
-                            "score": rec["score"],
-                        })
-                except Exception as exc:
-                    print(f"[linker] Full-text query failed: {exc}")
+                lucene_q = _sanitize_lucene_query(question)
+                if lucene_q:
+                    try:
+                        result = session.run(
+                            f"""
+                            CALL db.index.fulltext.queryNodes($idx, $q)
+                            YIELD node, score
+                            WHERE score >= $min_score
+                            RETURN elementId(node) AS element_id,
+                                   node.name        AS name,
+                                   labels(node)     AS labels,
+                                   score
+                            ORDER BY score DESC
+                            LIMIT $top_k
+                            """,
+                            idx=_INDEX_NAME,
+                            q=lucene_q,
+                            min_score=ENTITY_LINK_MIN_SCORE,
+                            top_k=ENTITY_LINK_TOP_K,
+                        )
+                        for rec in result:
+                            anchors.append({
+                                "element_id": rec["element_id"],
+                                "name": rec["name"],
+                                "labels": list(rec["labels"]),
+                                "score": rec["score"],
+                            })
+                    except Exception as exc:
+                        print(f"[linker] Full-text query failed: {exc}")
+
+            # Fall back to n-gram if index gave nothing
+            if not anchors and label_samples:
+                print("[linker] Full-text gave no results; using n-gram fallback.")
+                raw_anchors = _ngram_match(question, label_samples)
+                for a in raw_anchors:
+                    try:
+                        res = session.run(
+                            "MATCH (n) WHERE toLower(n.name) = toLower($name) RETURN elementId(n) AS element_id, labels(n) AS labels LIMIT 1",
+                            name=a["name"],
+                        ).single()
+                        if res:
+                            a["element_id"] = res["element_id"]
+                            a["labels"] = list(res["labels"])
+                    except Exception as r_exc:
+                        print(f"[linker] Could not resolve element_id for '{a['name']}': {r_exc}")
+                    anchors.append(a)
+
     except Exception as exc:
         print(f"[linker] Neo4j connection error: {exc}")
     finally:
         driver.close()
 
-    # Fall back to n-gram if index gave nothing
-    if not anchors and label_samples:
-        print("[linker] Full-text gave no results; using n-gram fallback.")
-        anchors = _ngram_match(question, label_samples)
-
     print(f"Anchors found: {len(anchors)}")
     for a in anchors:
-        print(f"  {a['name']} {a['labels']}  score={a['score']:.3f}")
+        print(f"  element_id={a.get('element_id')}  {a['name']} {a['labels']}  score={a['score']:.3f}")
     print()
     return anchors
+

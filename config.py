@@ -22,6 +22,7 @@ QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "graphrag_chunks")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
 EXTRACTION_MODEL = os.getenv("EXTRACTION_MODEL", "qwen2.5:3b-instruct")
+REASONING_MODEL = os.getenv("REASONING_MODEL", EXTRACTION_MODEL)
 
 # --- Query pipeline tunables ---
 # Schema cache time-to-live (seconds)
@@ -51,7 +52,7 @@ GRAPH_MAX_DEPTH = int(os.getenv("GRAPH_MAX_DEPTH", "1"))
 GRAPH_MAX_PATH_LEN = int(os.getenv("GRAPH_MAX_PATH_LEN", "3"))
 GRAPH_MAX_FANOUT = int(os.getenv("GRAPH_MAX_FANOUT", "10"))
 GRAPH_TOP_K = int(os.getenv("GRAPH_TOP_K", "10"))
-GRAPH_REL_CUTOFF = float(os.getenv("GRAPH_REL_CUTOFF", "0.5"))
+GRAPH_REL_CUTOFF = float(os.getenv("GRAPH_REL_CUTOFF", "0.75"))
 GRAPH_STAGE_TIMEOUT = float(os.getenv("GRAPH_STAGE_TIMEOUT", "5.0"))
 
 # Vector semantic retrieval tunables

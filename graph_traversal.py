@@ -14,13 +14,52 @@ import math
 from neo4j import GraphDatabase
 from neo4j.graph import Node, Relationship, Path
 
+import ollama
 from config import (
     NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD,
+    OLLAMA_HOST, EMBEDDING_MODEL,
     GRAPH_MAX_ROWS, GRAPH_MAX_DEPTH, GRAPH_MAX_PATH_LEN,
     GRAPH_MAX_FANOUT, GRAPH_TOP_K, GRAPH_REL_CUTOFF,
     GRAPH_STAGE_TIMEOUT
 )
 from embed import embed
+
+_EMBED_CACHE: dict[str, list[float]] = {}
+
+
+def _batch_embed(texts: list[str]) -> list[list[float]]:
+    """Batches embedding requests to Ollama and caches vectors in memory."""
+    if not texts:
+        return []
+
+    uncached_indices = []
+    uncached_texts = []
+    results: list[list[float]] = [None] * len(texts)
+
+    for i, t in enumerate(texts):
+        if t in _EMBED_CACHE:
+            results[i] = _EMBED_CACHE[t]
+        else:
+            uncached_indices.append(i)
+            uncached_texts.append(t)
+
+    if uncached_texts:
+        try:
+            client = ollama.Client(host=OLLAMA_HOST)
+            resp = client.embed(model=EMBEDDING_MODEL, input=uncached_texts)
+            for idx, text, vec in zip(uncached_indices, uncached_texts, resp["embeddings"]):
+                _EMBED_CACHE[text] = vec
+                results[idx] = vec
+        except Exception as exc:
+            print(f"[graph_traversal] Batch embed notice: {exc}; fallback to single embed()")
+            for idx in uncached_indices:
+                t = texts[idx]
+                vec = embed(t)
+                _EMBED_CACHE[t] = vec
+                results[idx] = vec
+
+    return results
+
 
 
 def _serialize(val):
@@ -125,24 +164,23 @@ def _cap_hub_fanout(edges: list[dict], question: str) -> list[dict]:
         if len(incident) <= GRAPH_MAX_FANOUT:
             continue
         print(f"[graph_traversal] Node '{node}' has {len(incident)} edges > fanout cap {GRAPH_MAX_FANOUT}. Truncating...")
-        if q_vec:
-            try:
-                scored = []
-                for inc in incident:
-                    s_vec = embed(edge_to_sentence(inc))
-                    sim = _cosine(q_vec, s_vec)
-                    scored.append((sim, inc))
-                scored.sort(key=lambda x: x[0], reverse=True)
-                top_incident_rids = {item[1].get("rid", "") for item in scored[:GRAPH_MAX_FANOUT]}
-                for inc in incident:
-                    rid = inc.get("rid", "")
-                    if rid not in top_incident_rids and rid in kept_rids:
-                        kept_rids.remove(rid)
-            except Exception as exc:
-                print(f"[graph_traversal] Hub truncation score error: {exc}; slicing directly.")
-                dropped_rids = {item.get("rid", "") for item in incident[GRAPH_MAX_FANOUT:]}
-                kept_rids -= dropped_rids
-        else:
+        try:
+            inc_sentences = [edge_to_sentence(inc) for inc in incident]
+            all_vecs = _batch_embed([question] + inc_sentences)
+            q_vec = all_vecs[0]
+            s_vecs = all_vecs[1:]
+            scored = []
+            for inc, s_vec in zip(incident, s_vecs):
+                sim = _cosine(q_vec, s_vec)
+                scored.append((sim, inc))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            top_incident_rids = {item[1].get("rid", "") for item in scored[:GRAPH_MAX_FANOUT]}
+            for inc in incident:
+                rid = inc.get("rid", "")
+                if rid not in top_incident_rids and rid in kept_rids:
+                    kept_rids.remove(rid)
+        except Exception as exc:
+            print(f"[graph_traversal] Hub truncation score error: {exc}; slicing directly.")
             dropped_rids = {item.get("rid", "") for item in incident[GRAPH_MAX_FANOUT:]}
             kept_rids -= dropped_rids
 
@@ -208,7 +246,9 @@ def expand_anchors(anchor_ids: list[str], depth: int = GRAPH_MAX_DEPTH, question
     Returns (edges, error_or_None).
     """
     if not anchor_ids:
-        return [], None
+        err = "No anchor element IDs provided for graph traversal expansion."
+        print(f"[graph_traversal] WARNING: {err}")
+        return [], err
 
     if depth <= 1:
         cypher = """
@@ -268,10 +308,12 @@ def rank_and_build_paths(edges: list[dict], question: str) -> tuple[list[dict], 
     if not edges:
         return [], []
 
+    t_rank0 = time.perf_counter()
     sentences = [edge_to_sentence(e) for e in edges]
     try:
-        q_vec = embed(question)
-        sent_vecs = [embed(s) for s in sentences]
+        all_vecs = _batch_embed([question] + sentences)
+        q_vec = all_vecs[0]
+        sent_vecs = all_vecs[1:]
         scores = [_cosine(q_vec, v) for v in sent_vecs]
     except Exception as exc:
         print(f"[graph_traversal] Fact ranking embedding error: {exc}")
@@ -285,8 +327,10 @@ def rank_and_build_paths(edges: list[dict], question: str) -> tuple[list[dict], 
     graph_path = []
 
     for score, edge, sentence in paired:
-        if score < cutoff and len(graph_results) > 0:
-            continue
+        # Strictly filter out any fact whose score is below the relative cutoff
+        if score < cutoff:
+            break
+
         edge_copy = dict(edge)
         edge_copy["_sentence"] = sentence
         edge_copy["_rank_score"] = round(score, 4)
@@ -304,5 +348,6 @@ def rank_and_build_paths(edges: list[dict], question: str) -> tuple[list[dict], 
         if len(graph_results) >= GRAPH_TOP_K:
             break
 
-    print(f"[graph_traversal] Fact ranking: {len(edges)} edges -> {len(graph_results)} kept (top={top_score:.4f}, cutoff={cutoff:.4f})")
+    elapsed_ms = round((time.perf_counter() - t_rank0) * 1000)
+    print(f"[graph_traversal] Fact ranking: {len(edges)} edges -> {len(graph_results)} kept (top={top_score:.4f}, cutoff={cutoff:.4f}) in {elapsed_ms}ms")
     return graph_results, graph_path
