@@ -7,6 +7,7 @@ Docs: http://localhost:8000/docs
 import time
 from datetime import date
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from parsers import parse_file
@@ -37,6 +38,13 @@ from config import (
 )
 
 app = FastAPI(title="GraphRAG Ingestion & Query API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://127.0.0.1:5173", "http://127.0.0.1:5174"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class QueryRequest(BaseModel):
@@ -249,8 +257,11 @@ async def query_endpoint(request: QueryRequest):
     # Stage 5: Answer generation & Reasoning
     # -----------------------------------------------------------------------
     t0 = time.perf_counter()
-    answer, grounding_warning = generate_answer(question, graph_results, vector_results)
+    answer, grounding_warning, reasoning_provider_used = generate_answer(
+        question, graph_results, vector_results
+    )
     diagnostics["reasoning_ms"] = round((time.perf_counter() - t0) * 1000)
+    diagnostics["reasoning_provider_used"] = reasoning_provider_used
 
     # Effective classification reflects actual retrieval performed
     if graph_results and vector_results:
@@ -274,6 +285,7 @@ async def query_endpoint(request: QueryRequest):
     print(f"  graph_raw_count:    {graph_raw_count}")
     print(f"  graph_result_count: {graph_result_count}")
     print(f"  vector chunks:      {len(vector_results)}")
+    print(f"  reasoning_provider: {reasoning_provider_used}")
     print(f"  grounding_warning:  {grounding_warning}")
     print(f"  diagnostics:        {diagnostics}")
     print()
@@ -292,6 +304,7 @@ async def query_endpoint(request: QueryRequest):
         "vector_results": vector_results,
         "vector_counts": vector_counts,
         "grounding_warning": grounding_warning,
+        "reasoning_provider_used": reasoning_provider_used,
         "diagnostics": diagnostics,
     }
 

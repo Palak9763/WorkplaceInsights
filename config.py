@@ -22,7 +22,18 @@ QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "graphrag_chunks")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
 EXTRACTION_MODEL = os.getenv("EXTRACTION_MODEL", "qwen2.5:3b-instruct")
+# Local Ollama model used for reasoning when REASONING_PROVIDER=ollama (or as fallback).
 REASONING_MODEL = os.getenv("REASONING_MODEL", EXTRACTION_MODEL)
+
+# --- Reasoning provider ---
+# Set REASONING_PROVIDER=groq to send the answer-synthesis call to Groq instead of
+# local Ollama. All other pipeline steps (embed, extract, classify, cypher) stay on Ollama.
+REASONING_PROVIDER = os.getenv("REASONING_PROVIDER", "ollama")  # "ollama" | "groq"
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+REASONING_TEMPERATURE = float(os.getenv("REASONING_TEMPERATURE", "0"))
+REASONING_TIMEOUT_S = float(os.getenv("REASONING_TIMEOUT_S", "20"))
 
 # --- Query pipeline tunables ---
 # Schema cache time-to-live (seconds)
