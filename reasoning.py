@@ -5,17 +5,21 @@ Steps:
 1. Render graph rows as directed sentences.
 2. If both graph and vector results are empty, return the "not enough info" string
    without calling the LLM.
-3. Call the LLM once with graph sentences + vector chunks.
+3. Call the LLM once with graph sentences + vector chunks (via the configured
+   reasoning provider — Groq or local Ollama).
 4. Grounding check: extract capitalized tokens and numbers from the answer;
    verify each appears in the provided context. If any doesn't, regenerate once
    with the suspicious tokens listed as forbidden. If still failing, return the
    answer with a grounding_warning list.
 
-Returns (answer: str, grounding_warning: list[str])
+Returns (answer: str, grounding_warning: list[str], provider_used: str)
 """
 import re
 import json
+import urllib.request
+import urllib.error
 import ollama
+import config
 from config import OLLAMA_HOST, REASONING_MODEL
 
 _NOT_ENOUGH = "I don't have enough information to answer that."
@@ -91,8 +95,111 @@ def _token_in_context(token: str, context: str) -> bool:
     return token.lower() in context.lower()
 
 
-def _call_llm(question: str, graph_sentences: list[str], vector_results: list[dict],
-               forbidden: list[str] | None = None) -> str:
+def _call_reasoning_llm(system_prompt: str, user_prompt: str) -> tuple[str, str]:
+    """
+    Provider-agnostic LLM call for answer synthesis.
+
+    Returns (response_text, provider_used) where provider_used is one of:
+      "groq"   — Groq API was used successfully
+      "ollama" — Local Ollama was used (either as primary or as fallback)
+
+    Fallback logic:
+      If REASONING_PROVIDER=groq but GROQ_API_KEY is missing or the call fails,
+      logs a clear WARNING and falls back to local Ollama for this request only.
+      Never silently swallows errors — the fallback itself is always logged.
+    """
+    # ── Groq path ──────────────────────────────────────────────────────────
+    if config.REASONING_PROVIDER == "groq":
+        if not config.GROQ_API_KEY:
+            print(
+                "[reasoning] WARNING: REASONING_PROVIDER=groq but GROQ_API_KEY is empty. "
+                "Falling back to local Ollama."
+            )
+        else:
+            try:
+                payload = json.dumps({
+                    "model": config.GROQ_MODEL,
+                    "temperature": config.REASONING_TEMPERATURE,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user",   "content": user_prompt},
+                    ],
+                }).encode()
+
+                req = urllib.request.Request(
+                    f"{config.GROQ_BASE_URL}/chat/completions",
+                    data=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {config.GROQ_API_KEY}",
+                    },
+                    method="POST",
+                )
+
+                print(
+                    f"[reasoning] Calling Groq ({config.GROQ_MODEL}) "
+                    f"with timeout={config.REASONING_TIMEOUT_S}s"
+                )
+                with urllib.request.urlopen(
+                    req, timeout=config.REASONING_TIMEOUT_S
+                ) as resp:
+                    if resp.status != 200:
+                        body = resp.read().decode(errors="replace")
+                        raise RuntimeError(
+                            f"Groq returned HTTP {resp.status}: {body[:300]}"
+                        )
+                    data = json.loads(resp.read())
+
+                text = data["choices"][0]["message"]["content"].strip()
+                print(f"[reasoning] Groq call succeeded ({len(text)} chars).")
+                return text, "groq"
+
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode(errors="replace") if exc.fp else ""
+                print(
+                    f"[reasoning] WARNING: Groq HTTP error {exc.code}: {body[:300]}. "
+                    "Falling back to local Ollama."
+                )
+            except urllib.error.URLError as exc:
+                print(
+                    f"[reasoning] WARNING: Groq network error: {exc.reason}. "
+                    "Falling back to local Ollama."
+                )
+            except TimeoutError:
+                print(
+                    f"[reasoning] WARNING: Groq call timed out after "
+                    f"{config.REASONING_TIMEOUT_S}s. Falling back to local Ollama."
+                )
+            except Exception as exc:
+                print(
+                    f"[reasoning] WARNING: Groq call failed: {exc}. "
+                    "Falling back to local Ollama."
+                )
+
+    # ── Ollama path (primary when provider=ollama, or fallback from Groq) ──
+    print(f"[reasoning] Calling local Ollama ({REASONING_MODEL})")
+    client = ollama.Client(host=OLLAMA_HOST)
+    response = client.chat(
+        model=REASONING_MODEL,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": user_prompt},
+        ],
+        options={"temperature": config.REASONING_TEMPERATURE or 0.1},
+    )
+    return response["message"]["content"].strip(), "ollama"
+
+
+def _call_llm(
+    question: str,
+    graph_sentences: list[str],
+    vector_results: list[dict],
+    forbidden: list[str] | None = None,
+) -> tuple[str, str]:
+    """
+    Builds the structured prompt and delegates to _call_reasoning_llm.
+    Returns (answer_text, provider_used).
+    """
     graph_block = (
         "\n".join(f"  {i+1}. {s}" for i, s in enumerate(graph_sentences))
         if graph_sentences else "  (none)"
@@ -102,8 +209,8 @@ def _call_llm(question: str, graph_sentences: list[str], vector_results: list[di
     if vector_results:
         for i, c in enumerate(vector_results, start=1):
             src = c.get("source", "unknown")
-            dt = c.get("date", "unknown")
-            txt = c.get("text", "")
+            dt  = c.get("date",   "unknown")
+            txt = c.get("text",   "")
             vector_lines.append(f"[Document {i}] (Source: {src}, Date: {dt}):\n{txt}")
         vector_block = "\n\n".join(vector_lines)
     else:
@@ -121,30 +228,23 @@ def _call_llm(question: str, graph_sentences: list[str], vector_results: list[di
         f"GRAPH FACTS:\n{graph_block}\n\n"
         f"DOCUMENT CHUNKS:\n{vector_block}"
         f"{forbidden_note}\n\n"
-        "Write a concise answer with inline citations, making sure to report all distinct incidents/events found:"
+        "Write a concise answer with inline citations, making sure to report all "
+        "distinct incidents/events found:"
     )
 
     print(f"\n[reasoning] === SYSTEM PROMPT ===\n{_SYSTEM_PROMPT}")
     print(f"\n[reasoning] === USER PROMPT ===\n{user_prompt}\n")
 
-    client = ollama.Client(host=OLLAMA_HOST)
-    response = client.chat(
-        model=REASONING_MODEL,
-        messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-        options={"temperature": 0.1},
-    )
-    return response["message"]["content"].strip()
+    return _call_reasoning_llm(_SYSTEM_PROMPT, user_prompt)
 
 
 
 def generate_answer(
     question: str, graph_results: list[dict], vector_results: list[dict]
-) -> tuple[str, list[str]]:
+) -> tuple[str, list[str], str]:
     """
-    Returns (answer: str, grounding_warning: list[str]).
+    Returns (answer: str, grounding_warning: list[str], provider_used: str).
+    provider_used is "groq" or "ollama" — whichever actually answered.
     grounding_warning is [] when no hallucination was detected.
     """
     print("==================================================")
@@ -152,10 +252,11 @@ def generate_answer(
     print("==================================================")
     print(f"Question: {question}")
     print(f"Graph rows: {len(graph_results)}  |  Vector chunks: {len(vector_results)}")
+    print(f"[reasoning] Configured provider: {config.REASONING_PROVIDER}")
 
     if not graph_results and not vector_results:
-        print(f"[answer] No context -> returning 'not enough info'")
-        return _NOT_ENOUGH, []
+        print("[answer] No context -> returning 'not enough info'")
+        return _NOT_ENOUGH, [], config.REASONING_PROVIDER
 
     graph_sentences = _rows_to_sentences(graph_results)
     # Build a single context string for grounding checks
@@ -169,25 +270,26 @@ def generate_answer(
     )
 
     # --- First LLM call ---
-    error: str | None = None
+    provider_used: str = config.REASONING_PROVIDER  # updated after actual call
     try:
-        answer = _call_llm(question, graph_sentences, vector_results)
+        answer, provider_used = _call_llm(question, graph_sentences, vector_results)
     except Exception as exc:
-        error = f"LLM error: {exc}"
         print(f"[answer] ERROR: {exc}")
-        return f"I encountered an error generating the final answer. ({exc})", []
+        return f"I encountered an error generating the final answer. ({exc})", [], provider_used
 
     # --- Grounding check ---
-    suspicious = _extract_suspicious_tokens(answer)
-    ungrounded = [t for t in suspicious if not _token_in_context(t, context)]
+    suspicious  = _extract_suspicious_tokens(answer)
+    ungrounded  = [t for t in suspicious if not _token_in_context(t, context)]
 
     grounding_warning: list[str] = []
     if ungrounded:
         print(f"[grounding] Suspicious tokens not in context: {ungrounded}")
         # One regeneration attempt with forbidden list
         try:
-            answer2 = _call_llm(question, graph_sentences, vector_results, forbidden=ungrounded)
-            suspicious2 = _extract_suspicious_tokens(answer2)
+            answer2, provider_used = _call_llm(
+                question, graph_sentences, vector_results, forbidden=ungrounded
+            )
+            suspicious2    = _extract_suspicious_tokens(answer2)
             still_ungrounded = [t for t in suspicious2 if not _token_in_context(t, context)]
             if still_ungrounded:
                 grounding_warning = still_ungrounded
@@ -202,7 +304,7 @@ def generate_answer(
     else:
         print("[grounding] All tokens grounded in context.")
 
-    print(f"[ANSWER]\n{answer}\n")
+    print(f"[ANSWER] (via {provider_used})\n{answer}\n")
     if grounding_warning:
         print(f"[grounding_warning] {grounding_warning}")
-    return answer, grounding_warning
+    return answer, grounding_warning, provider_used
