@@ -252,13 +252,23 @@ async def query_endpoint(request: QueryRequest):
     answer, grounding_warning = generate_answer(question, graph_results, vector_results)
     diagnostics["reasoning_ms"] = round((time.perf_counter() - t0) * 1000)
 
+    # Effective classification reflects actual retrieval performed
+    if graph_results and vector_results:
+        effective_classification = "hybrid"
+    elif graph_results and not vector_results:
+        effective_classification = "graph"
+    elif vector_results and not graph_results:
+        effective_classification = "vector"
+    else:
+        effective_classification = route
+
     # -----------------------------------------------------------------------
     # Terminal summary
     # -----------------------------------------------------------------------
     print("==================================================")
     print("QUERY COMPLETE")
     print("==================================================")
-    print(f"  classification:     {route} (multihop={multihop}, agg={aggregation})")
+    print(f"  classification:     {effective_classification} (route={route}, multihop={multihop}, agg={aggregation})")
     print(f"  anchors:            {[a['name'] for a in anchors]}")
     print(f"  graph_path_source:  {graph_path_source}")
     print(f"  graph_raw_count:    {graph_raw_count}")
@@ -270,7 +280,7 @@ async def query_endpoint(request: QueryRequest):
 
     return {
         "answer": answer,
-        "classification": route,
+        "classification": effective_classification,
         "anchors": anchors,
         "cypher_used": cypher_used,
         "graph_fallback_used": graph_fallback_used,

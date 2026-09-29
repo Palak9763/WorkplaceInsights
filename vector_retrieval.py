@@ -8,6 +8,7 @@ Semantic vector retrieval module implementing:
 6. Matched anchor boolean tagging on each chunk.
 7. Stage hit-counts tracking for diagnostics.
 """
+import time
 import math
 from qdrant_client import QdrantClient
 from qdrant_client.models import Filter, FieldCondition, MatchText
@@ -116,19 +117,25 @@ def vector_retrieve(
             print(f"[vector_retrieval] ERROR: {error}")
             return [], counts, error
 
+        t_emb0 = time.perf_counter()
         query_vector = embed(question)
-        print(f"[vector_retrieval] Question embedded, vector len={len(query_vector)}")
+        emb_ms = round((time.perf_counter() - t_emb0) * 1000)
+        print(f"[vector_retrieval] Question embedded in {emb_ms}ms, vector len={len(query_vector)}")
 
         # --- Search 1: Plain semantic search ---
+        t_p0 = time.perf_counter()
         plain_hits = client.search(
             collection_name=QDRANT_COLLECTION,
             query_vector=query_vector,
             limit=VECTOR_TOP_K * 2,
+            with_vectors=True,
         )
+        plain_ms = round((time.perf_counter() - t_p0) * 1000)
         counts["plain_hits"] = len(plain_hits)
-        print(f"[vector_retrieval] Plain search returned {len(plain_hits)} hits")
+        print(f"[vector_retrieval] Plain search returned {len(plain_hits)} hits in {plain_ms}ms")
 
         # --- Search 2: Anchor-filtered search (if anchors exist) ---
+        t_f0 = time.perf_counter()
         filtered_hits = []
         if anchors:
             for a in anchors:
@@ -143,15 +150,17 @@ def vector_retrieve(
                             must=[FieldCondition(key="text", match=MatchText(text=a_name))]
                         ),
                         limit=VECTOR_TOP_K * 2,
+                        with_vectors=True,
                     )
                     filtered_hits.extend(f_hits)
                 except Exception as f_exc:
                     print(f"[vector_retrieval] Anchor filter search notice for '{a_name}': {f_exc}")
+        filter_ms = round((time.perf_counter() - t_f0) * 1000)
         counts["filtered_hits"] = len(filtered_hits)
-        print(f"[vector_retrieval] Anchor-filtered search returned {len(filtered_hits)} hits")
+        print(f"[vector_retrieval] Anchor-filtered search returned {len(filtered_hits)} hits in {filter_ms}ms")
 
         # --- Reciprocal Rank Fusion (RRF) ---
-        # Track items by text/id
+        t_rrf0 = time.perf_counter()
         items_map: dict[str, dict] = {}
         rrf_scores: dict[str, float] = {}
 
@@ -171,6 +180,7 @@ def vector_retrieve(
                         "date": payload.get("date", ""),
                         "score": hit.score,
                         "matched_anchor": _check_matched_anchor(payload.get("text", ""), anchors),
+                        "_vector": hit.vector if hasattr(hit, "vector") and hit.vector else None,
                     }
                 rrf_scores[text_key] = rrf_scores.get(text_key, 0.0) + (1.0 / (RRF_K + rank + 1))
                 rank += 1
@@ -186,8 +196,9 @@ def vector_retrieve(
             item = items_map[k]
             item["rrf_score"] = round(rrf_scores[k], 5)
             merged_items.append(item)
+        rrf_ms = round((time.perf_counter() - t_rrf0) * 1000)
         counts["rrf_merged"] = len(merged_items)
-        print(f"[vector_retrieval] RRF merged {len(merged_items)} distinct chunks")
+        print(f"[vector_retrieval] RRF merged {len(merged_items)} distinct chunks in {rrf_ms}ms")
 
         if not merged_items:
             return [], counts, None
@@ -200,9 +211,13 @@ def vector_retrieve(
         print(f"[vector_retrieval] Relative cutoff kept {len(cutoff_items)}/{len(merged_items)} chunks (cutoff={cutoff_threshold:.5f})")
 
         # --- MMR Deduplication ---
+        t_mmr0 = time.perf_counter()
         doc_vectors = []
         for item in cutoff_items:
-            doc_vectors.append(embed(item.get("text", "")))
+            vec = item.get("_vector")
+            if vec is None:
+                vec = embed(item.get("text", ""))
+            doc_vectors.append(vec)
 
         mmr_items = _mmr_select(
             query_vec=query_vector,
@@ -211,15 +226,20 @@ def vector_retrieve(
             top_k=VECTOR_TOP_K,
             lambda_param=VECTOR_MMR_LAMBDA,
         )
+        # Clean private _vector key before returning
+        for item in mmr_items:
+            item.pop("_vector", None)
+
+        mmr_ms = round((time.perf_counter() - t_mmr0) * 1000)
         counts["mmr_kept"] = len(mmr_items)
-        print(f"[vector_retrieval] MMR kept {len(mmr_items)} chunks")
+        print(f"[vector_retrieval] MMR kept {len(mmr_items)} chunks in {mmr_ms}ms")
 
         # --- Optional Cross-Encoder Reranker ---
         final_results = mmr_items
         if RERANKER_MODEL.strip():
             try:
+                t_re0 = time.perf_counter()
                 print(f"[vector_retrieval] Running cross-encoder reranker ({RERANKER_MODEL})...")
-                # If sentence_transformers is available, use CrossEncoder; else fallback gracefully with log
                 from sentence_transformers import CrossEncoder
                 reranker = CrossEncoder(RERANKER_MODEL)
                 pairs = [[question, item.get("text", "")] for item in mmr_items]
@@ -227,7 +247,8 @@ def vector_retrieve(
                 for item, s in zip(mmr_items, cross_scores):
                     item["rerank_score"] = float(s)
                 final_results = sorted(mmr_items, key=lambda x: x.get("rerank_score", 0.0), reverse=True)[:RERANK_TOP_K]
-                print(f"[vector_retrieval] Reranker kept top {len(final_results)} chunks")
+                re_ms = round((time.perf_counter() - t_re0) * 1000)
+                print(f"[vector_retrieval] Reranker kept top {len(final_results)} chunks in {re_ms}ms")
             except Exception as r_exc:
                 print(f"[vector_retrieval] Cross-encoder reranker notice/error: {r_exc}")
 
