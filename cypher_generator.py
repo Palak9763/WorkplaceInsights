@@ -11,7 +11,8 @@ Key design principles (all data-agnostic):
 - GRAPH_MAX_ROWS from config is used for LIMIT; never hardcoded.
 """
 import ollama
-from config import OLLAMA_HOST, EXTRACTION_MODEL, GRAPH_MAX_ROWS
+from groq import Groq
+from config import OLLAMA_HOST, EXTRACTION_MODEL, GRAPH_MAX_ROWS, REASONING_PROVIDER, GROQ_API_KEY, GROQ_MODEL
 
 _SYSTEM_INSTRUCTIONS = """\
 You are an expert Neo4j Cypher query generator.
@@ -132,19 +133,33 @@ def generate_cypher(
     print(f"Anchors passed: {[a['name'] for a in anchors]}")
 
     system_prompt, user_prompt = _build_prompt(schema, anchors, question, error_context)
-    client = ollama.Client(host=OLLAMA_HOST)
     error: str | None = None
 
     try:
-        response = client.chat(
-            model=EXTRACTION_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            options={"temperature": 0.0},
-        )
-        cypher = _clean(response["message"]["content"])
+        if REASONING_PROVIDER == "groq" and GROQ_API_KEY:
+            # ── Groq path (fast) ─────────────────────────────────────────
+            client = Groq(api_key=GROQ_API_KEY)
+            completion = client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": user_prompt},
+                ],
+                temperature=0.0,
+            )
+            cypher = _clean(completion.choices[0].message.content)
+        else:
+            # ── Ollama path (fallback) ────────────────────────────────
+            ollama_client = ollama.Client(host=OLLAMA_HOST)
+            response = ollama_client.chat(
+                model=EXTRACTION_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": user_prompt},
+                ],
+                options={"temperature": 0.0},
+            )
+            cypher = _clean(response["message"]["content"])
     except Exception as exc:
         error = f"LLM Cypher generation failed: {exc}"
         print(f"[cypher_gen] ERROR: {exc}")

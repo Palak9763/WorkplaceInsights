@@ -9,7 +9,8 @@ relationship names, keyword lists, or regex routing anywhere.
 import json
 import re
 import ollama
-from config import OLLAMA_HOST, EXTRACTION_MODEL, ANCHOR_FORCES_HYBRID
+from groq import Groq
+from config import OLLAMA_HOST, EXTRACTION_MODEL, ANCHOR_FORCES_HYBRID, REASONING_PROVIDER, GROQ_API_KEY, GROQ_MODEL
 
 
 def _build_classify_prompt(schema: dict, anchors: list[dict]) -> str:
@@ -56,22 +57,37 @@ def classify_query(question: str, schema: dict, anchors: list[dict]) -> dict:
     print(f"Anchor count: {len(anchors)}")
 
     system_prompt = _build_classify_prompt(schema, anchors)
-    client = ollama.Client(host=OLLAMA_HOST)
     route = "hybrid"
     multihop = False
     aggregation = False
     error: str | None = None
 
     try:
-        response = client.chat(
-            model=EXTRACTION_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Classify this question:\n{question}"},
-            ],
-            options={"temperature": 0.0},
-        )
-        content = response["message"]["content"].strip()
+        if REASONING_PROVIDER == "groq" and GROQ_API_KEY:
+            # ── Groq path (fast) ──────────────────────────────────────────
+            client = Groq(api_key=GROQ_API_KEY)
+            completion = client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Classify this question:\n{question}"},
+                ],
+                temperature=0.0,
+            )
+            content = completion.choices[0].message.content.strip()
+        else:
+            # ── Ollama path (fallback) ────────────────────────────────────
+            client = ollama.Client(host=OLLAMA_HOST)
+            response = client.chat(
+                model=EXTRACTION_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Classify this question:\n{question}"},
+                ],
+                options={"temperature": 0.0},
+                keep_alive="5m",
+            )
+            content = response["message"]["content"].strip()
         # Parse JSON if possible
         match = re.search(r"\{.*\}", content, re.DOTALL)
         if match:

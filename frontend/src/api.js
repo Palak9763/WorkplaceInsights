@@ -7,8 +7,8 @@
 //   (b) Or keep "" and configure your reverse-proxy to forward /query and /ingest.
 export const API_BASE = "http://127.0.0.1:8000";   // ← change this for production
 
-// Default timeout in milliseconds (45 s to cover slow graph queries).
-const DEFAULT_TIMEOUT_MS = 45_000;
+// Default timeout in milliseconds (90 s to cover slow graph queries + LLM reasoning).
+const DEFAULT_TIMEOUT_MS = 90_000;
 
 function withTimeout(promise, ms = DEFAULT_TIMEOUT_MS) {
   const timeout = new Promise((_, reject) =>
