@@ -42,8 +42,8 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 # --- Query pipeline tunables ---
-# Schema cache time-to-live (seconds)
-SCHEMA_CACHE_TTL = int(os.getenv("SCHEMA_CACHE_TTL", "30"))
+# Schema cache time-to-live (seconds) — 5 min avoids repeated Neo4j schema queries
+SCHEMA_CACHE_TTL = int(os.getenv("SCHEMA_CACHE_TTL", "300"))
 
 # Number of sample node names fetched per label for schema enrichment
 SCHEMA_SAMPLE_NAMES_PER_LABEL = int(os.getenv("SCHEMA_SAMPLE_NAMES_PER_LABEL", "5"))

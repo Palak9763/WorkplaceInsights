@@ -1,25 +1,22 @@
 import { useState, useRef, useEffect } from "react";
 import { queryAPI } from "../api";
 
-// ── Helpers ──────────────────────────────────────────────────────────────
+// ── Icons ──────────────────────────────────────────────────────────────────
+const SendIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="22" y1="2" x2="11" y2="13"/>
+    <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+  </svg>
+);
 
-function classificationBadge(cls) {
-  const map = {
-    graph: "badge-graph",
-    vector: "badge-vector",
-    hybrid: "badge-hybrid",
-  };
-  return (
-    <span className={`badge ${map[cls] ?? "badge-default"}`}>
-      {cls ?? "—"}
-    </span>
-  );
+// ── Sub-components ─────────────────────────────────────────────────────────
+function Badge({ cls }) {
+  const map = { graph: "badge-graph", vector: "badge-vector", hybrid: "badge-hybrid" };
+  return <span className={`badge ${map[cls] ?? "badge-default"}`}>{cls ?? "—"}</span>;
 }
 
 function GraphRow({ row }) {
-  const entries = Object.entries(row).filter(
-    ([k]) => !k.startsWith("_") && k !== "rid"
-  );
+  const entries = Object.entries(row).filter(([k]) => !k.startsWith("_") && k !== "rid");
   if (!entries.length) return null;
   return (
     <table className="kv-table">
@@ -37,68 +34,43 @@ function GraphRow({ row }) {
 
 function SourcesSection({ graphResults, vectorResults, cypherUsed }) {
   const [open, setOpen] = useState(false);
-
-  const hasContent =
-    (graphResults && graphResults.length > 0) ||
-    (vectorResults && vectorResults.length > 0) ||
-    cypherUsed;
-
-  if (!hasContent) return null;
+  const total = (graphResults?.length ?? 0) + (vectorResults?.length ?? 0);
+  if (!total && !cypherUsed) return null;
 
   return (
     <div>
-      <button
-        className={`collapsible-toggle ${open ? "open" : ""}`}
-        onClick={() => setOpen((o) => !o)}
-      >
-        <em className="chevron">▶</em>
-        Sources &amp; evidence
-        {graphResults?.length || vectorResults?.length
-          ? ` (${(graphResults?.length ?? 0) + (vectorResults?.length ?? 0)})`
-          : ""}
+      <button className="sources-toggle" onClick={() => setOpen(o => !o)}>
+        <span className={`sources-chevron ${open ? "open" : ""}`}>▶</span>
+        Sources &amp; evidence {total > 0 && `(${total})`}
       </button>
-
       {open && (
-        <div className="collapsible-body">
-          {/* Cypher */}
+        <div className="sources-body">
           {cypherUsed && (
             <div>
-              <p className="code-label">Cypher used</p>
+              <p className="source-label">Cypher used</p>
               <pre className="code-block">{cypherUsed}</pre>
             </div>
           )}
-
-          {/* Vector chunks */}
           {vectorResults?.length > 0 && (
             <div>
-              <p className="code-label">
-                Document chunks ({vectorResults.length})
-              </p>
+              <p className="source-label">Document chunks ({vectorResults.length})</p>
               {vectorResults.map((chunk, i) => (
                 <div className="source-chunk" key={i}>
                   <div>{chunk.text ?? "(no text)"}</div>
-                  <div className="source-meta">
+                  <div className="source-chunk-meta">
                     {chunk.source && <span>📄 {chunk.source}</span>}
                     {chunk.date && <span>📅 {chunk.date}</span>}
-                    {chunk.score != null && (
-                      <span>score {Number(chunk.score).toFixed(3)}</span>
-                    )}
+                    {chunk.score != null && <span>score {Number(chunk.score).toFixed(3)}</span>}
                   </div>
                 </div>
               ))}
             </div>
           )}
-
-          {/* Graph rows */}
           {graphResults?.length > 0 && (
             <div>
-              <p className="code-label">
-                Graph facts ({graphResults.length})
-              </p>
+              <p className="source-label">Graph facts ({graphResults.length})</p>
               {graphResults.map((row, i) => (
-                <div className="source-chunk" key={i}>
-                  <GraphRow row={row} />
-                </div>
+                <div className="source-chunk" key={i}><GraphRow row={row} /></div>
               ))}
             </div>
           )}
@@ -108,39 +80,40 @@ function SourcesSection({ graphResults, vectorResults, cypherUsed }) {
   );
 }
 
-function MessageBubble({ turn }) {
+function UserMessage({ text }) {
   return (
-    <div className="chat-turn">
-      <div className="chat-question">{turn.question}</div>
+    <div className="msg-user">
+      <div className="msg-user-bubble">{text}</div>
+    </div>
+  );
+}
 
-      <div className="chat-answer-wrap">
-        <div className="chat-answer-bubble">
-          <div className="answer-text">{turn.answer}</div>
-          <div className="answer-meta">
-            {classificationBadge(turn.classification)}
-            {turn.graph_result_count != null && (
-              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                {turn.graph_result_count} graph fact
-                {turn.graph_result_count !== 1 ? "s" : ""}
-              </span>
-            )}
-            {turn.vector_results?.length != null && (
-              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                {turn.vector_results.length} doc chunk
-                {turn.vector_results.length !== 1 ? "s" : ""}
-              </span>
-            )}
-          </div>
-
-          <SourcesSection
-            graphResults={turn.graph_results}
-            vectorResults={turn.vector_results}
-            cypherUsed={turn.cypher_used}
-          />
+function AssistantMessage({ turn }) {
+  return (
+    <div className="msg-assistant">
+      <div className="assistant-avatar">✦</div>
+      <div className="msg-assistant-body">
+        <div className="msg-assistant-text">{turn.answer}</div>
+        <div className="msg-assistant-meta">
+          <Badge cls={turn.classification} />
+          {turn.graph_result_count != null && (
+            <span className="meta-chip">
+              {turn.graph_result_count} graph fact{turn.graph_result_count !== 1 ? "s" : ""}
+            </span>
+          )}
+          {turn.vector_results?.length > 0 && (
+            <span className="meta-chip">
+              {turn.vector_results.length} doc chunk{turn.vector_results.length !== 1 ? "s" : ""}
+            </span>
+          )}
         </div>
-
+        <SourcesSection
+          graphResults={turn.graph_results}
+          vectorResults={turn.vector_results}
+          cypherUsed={turn.cypher_used}
+        />
         {turn.grounding_warning?.length > 0 && (
-          <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4, paddingLeft: 4 }}>
+          <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6 }}>
             ⚠ Possible ungrounded tokens: {turn.grounding_warning.join(", ")}
           </div>
         )}
@@ -149,121 +122,167 @@ function MessageBubble({ turn }) {
   );
 }
 
-// ── Main Component ────────────────────────────────────────────────────────
+function ThinkingIndicator({ question }) {
+  return (
+    <>
+      <UserMessage text={question} />
+      <div className="msg-assistant">
+        <div className="assistant-avatar">✦</div>
+        <div className="msg-assistant-body" style={{ paddingTop: 8 }}>
+          <div className="thinking-dots">
+            <span /><span /><span />
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
 
-export default function ChatView() {
-  const [history, setHistory] = useState([]);
+const SUGGESTIONS = [
+  { title: "Who works on", sub: "which technology?" },
+  { title: "What projects", sub: "are currently active?" },
+  { title: "Show connections", sub: "between teams" },
+  { title: "Summarize", sub: "recent activities" },
+];
+
+// ── Main Component ─────────────────────────────────────────────────────────
+// history & onMessageAdded come from App.jsx — ChatView never owns history
+export default function ChatView({ history = [], onMessageAdded }) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [pendingQuestion, setPendingQuestion] = useState("");
   const [error, setError] = useState(null);
   const logEndRef = useRef(null);
+  const textareaRef = useRef(null);
 
-  // Auto-scroll to bottom when history changes
+  // Scroll to bottom on new messages
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [history, loading]);
 
-  async function handleSubmit(e) {
-    e?.preventDefault();
-    const q = input.trim();
-    if (!q || loading) return;
+  // Auto-resize textarea
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = Math.min(ta.scrollHeight, 180) + "px";
+  }, [input]);
+
+  async function submit(q) {
+    const question = q.trim();
+    if (!question || loading) return;
 
     setInput("");
     setError(null);
     setLoading(true);
+    setPendingQuestion(question);
 
     try {
-      const data = await queryAPI(q);
-      setHistory((prev) => [
-        ...prev,
-        {
-          question: q,
-          answer: data.answer ?? "(no answer)",
-          classification: data.classification,
-          cypher_used: data.cypher_used,
-          graph_results: data.graph_results ?? [],
-          graph_result_count: data.graph_result_count,
-          vector_results: data.vector_results ?? [],
-          grounding_warning: data.grounding_warning ?? [],
-        },
-      ]);
+      const data = await queryAPI(question);
+      onMessageAdded?.(question, data);
     } catch (err) {
       setError(err.message ?? "Unknown error");
     } finally {
       setLoading(false);
+      setPendingQuestion("");
     }
   }
 
   function handleKeyDown(e) {
-    // Submit on Enter (not Shift+Enter)
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      handleSubmit();
+      submit(input);
     }
   }
 
+  const isEmpty = history.length === 0 && !loading;
+
   return (
-    <div className="chat-view">
-      {/* Log */}
-      <div className="chat-log">
-        {history.length === 0 && !loading && (
-          <div className="chat-empty">
-            <div className="icon">💬</div>
-            <strong>Ask anything about your data</strong>
-            <span>Results are retrieved from your Neo4j graph and Qdrant vector store.</span>
-          </div>
-        )}
-
-        {history.map((turn, i) => (
-          <MessageBubble key={i} turn={turn} />
-        ))}
-
-        {loading && (
-          <div className="chat-turn">
-            <div
-              className="chat-question"
-              style={{ alignSelf: "flex-end", opacity: 0.6 }}
-            >
-              {input || "…"}
-            </div>
-            <div className="loading-bubble">
-              <span className="spinner" />
-              Thinking…
-            </div>
-          </div>
-        )}
-
-        {error && <div className="inline-error">⚠ {error}</div>}
-
-        <div ref={logEndRef} />
+    <>
+      {/* Top bar */}
+      <div className="topbar">
+        <button className="model-pill active">
+          GraphRAG
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+            <polyline points="6 9 12 15 18 9"/>
+          </svg>
+        </button>
       </div>
 
-      {/* Input */}
-      <form className="chat-input-row" onSubmit={handleSubmit}>
-        <textarea
-          className="chat-textarea"
-          placeholder="Ask a question… (Enter to send, Shift+Enter for newline)"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          rows={1}
-          disabled={loading}
-        />
-        <button
-          type="submit"
-          className="btn-primary"
-          disabled={!input.trim() || loading}
-        >
-          {loading ? (
-            <>
-              <span className="spinner" />
-              Sending
-            </>
-          ) : (
-            "Send →"
+      {/* Scrollable chat area */}
+      <div className="chat-area">
+        <div className="chat-inner">
+
+          {/* Empty state */}
+          {isEmpty && (
+            <div className="chat-empty-state">
+              <h2>What's on your mind today?</h2>
+              <p>Ask anything about your workplace data — retrieved from your Neo4j graph and Qdrant vector store.</p>
+              <div className="empty-suggestions">
+                {SUGGESTIONS.map((s, i) => (
+                  <button
+                    key={i}
+                    className="suggestion-card"
+                    onClick={() => submit(`${s.title} ${s.sub}`)}
+                  >
+                    <strong>{s.title}</strong>
+                    {s.sub}
+                  </button>
+                ))}
+              </div>
+            </div>
           )}
-        </button>
-      </form>
-    </div>
+
+          {/* Message history from App */}
+          {history.map((turn, i) => (
+            <div key={i} className="msg-turn">
+              <UserMessage text={turn.question} />
+              <AssistantMessage turn={turn} />
+            </div>
+          ))}
+
+          {/* In-flight request */}
+          {loading && (
+            <div className="msg-turn">
+              <ThinkingIndicator question={pendingQuestion} />
+            </div>
+          )}
+
+          {/* Error */}
+          {error && <div className="inline-error">⚠ {error}</div>}
+
+          <div ref={logEndRef} />
+        </div>
+      </div>
+
+      {/* Input bar */}
+      <div className="input-area">
+        <div className="input-inner">
+          <div className="input-box">
+            <textarea
+              ref={textareaRef}
+              id="chat-input"
+              className="chat-textarea"
+              placeholder="Ask a question…"
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              rows={1}
+              disabled={loading}
+            />
+            <button
+              id="chat-send-btn"
+              className="send-btn"
+              onClick={() => submit(input)}
+              disabled={!input.trim() || loading}
+              title="Send"
+            >
+              {loading ? <span className="spinner" /> : <SendIcon />}
+            </button>
+          </div>
+          <p className="input-hint">Enter to send · Shift+Enter for new line</p>
+        </div>
+      </div>
+    </>
   );
 }

@@ -5,6 +5,7 @@ Run:  uvicorn ingest_api:app --reload
 Docs: http://localhost:8000/docs
 """
 import time
+import asyncio
 from datetime import date
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -111,23 +112,39 @@ async def query_endpoint(request: QueryRequest):
     diagnostics["schema_ms"] = round((time.perf_counter() - t0) * 1000)
 
     # -----------------------------------------------------------------------
-    # Stage 1: Entity linking
+    # Stage 1+2: Entity linking & Classification — run CONCURRENTLY
+    # (linking hits Neo4j; classification hits Groq — fully independent)
     # -----------------------------------------------------------------------
     t0 = time.perf_counter()
+    loop = asyncio.get_event_loop()
+
     anchors: list[dict] = []
+    cls_dict: dict = {}
+
     try:
-        anchors = link_entities(question, schema)
+        link_future = loop.run_in_executor(None, link_entities, question, schema)
+        classify_future = loop.run_in_executor(None, classify_query, question, schema, [])
+        anchors_result, cls_dict_prelim = await asyncio.gather(link_future, classify_future)
+        anchors = anchors_result
     except Exception as exc:
         diagnostics["linker_error"] = str(exc)
-        print(f"[query] Entity linker error: {exc}")
+        print(f"[query] Entity linker/classify parallel error: {exc}")
+        cls_dict_prelim = {"route": "hybrid", "multihop": False, "aggregation": False, "error": str(exc)}
+
     diagnostics["linker_ms"] = round((time.perf_counter() - t0) * 1000)
     diagnostics["anchor_count"] = len(anchors)
 
-    # -----------------------------------------------------------------------
-    # Stage 2: Classification & Routing
-    # -----------------------------------------------------------------------
-    t0 = time.perf_counter()
-    cls_dict = classify_query(question, schema, anchors)
+    # If anchors were found, re-classify with anchors context (fast, uses cached Groq)
+    # Only re-classify if anchors changed the picture meaningfully
+    if anchors:
+        try:
+            cls_dict = classify_query(question, schema, anchors)
+        except Exception as exc:
+            cls_dict = cls_dict_prelim
+            diagnostics["classify_error"] = str(exc)
+    else:
+        cls_dict = cls_dict_prelim
+
     route = cls_dict["route"]
     multihop = cls_dict["multihop"]
     aggregation = cls_dict["aggregation"]
