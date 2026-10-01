@@ -26,12 +26,13 @@ EXTRACTION_MODEL = os.getenv("EXTRACTION_MODEL", "qwen2.5:3b-instruct")
 REASONING_MODEL = os.getenv("REASONING_MODEL", EXTRACTION_MODEL)
 
 # --- Reasoning provider ---
-# Set REASONING_PROVIDER=groq to send the answer-synthesis call to Groq instead of
-# local Ollama. All other pipeline steps (embed, extract, classify, cypher) stay on Ollama.
-REASONING_PROVIDER = os.getenv("REASONING_PROVIDER", "ollama")  # "ollama" | "groq"
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+# REASONING_PROVIDER="ollama"  → local Ollama (default / fallback)
+# REASONING_PROVIDER="google" → Google AI Studio (Gemini)
+# All other pipeline steps (embed, extract, classify, cypher) always run on Ollama.
+REASONING_PROVIDER = os.getenv("REASONING_PROVIDER", "ollama")  # "ollama" | "google"
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
+GOOGLE_MODEL = os.getenv("GOOGLE_MODEL", "gemini-3.8-flash")
+GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 REASONING_TEMPERATURE = float(os.getenv("REASONING_TEMPERATURE", "0"))
 REASONING_TIMEOUT_S = float(os.getenv("REASONING_TIMEOUT_S", "20"))
 
