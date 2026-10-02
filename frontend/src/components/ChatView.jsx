@@ -147,7 +147,7 @@ const SUGGESTIONS = [
 
 // ── Main Component ─────────────────────────────────────────────────────────
 // history & onMessageAdded come from App.jsx — ChatView never owns history
-export default function ChatView({ history = [], onMessageAdded }) {
+export default function ChatView({ history = [], activeSessionId = null, onMessageAdded }) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [pendingQuestion, setPendingQuestion] = useState("");
@@ -178,7 +178,7 @@ export default function ChatView({ history = [], onMessageAdded }) {
     setPendingQuestion(question);
 
     try {
-      const data = await queryAPI(question);
+      const data = await queryAPI(question, activeSessionId);
       onMessageAdded?.(question, data);
     } catch (err) {
       setError(err.message ?? "Unknown error");

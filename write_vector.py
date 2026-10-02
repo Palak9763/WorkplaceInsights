@@ -3,7 +3,7 @@ Writes a text chunk + its real embedding + metadata into Qdrant Cloud.
 """
 import hashlib
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct
+from qdrant_client.models import Distance, VectorParams, PointStruct, PayloadSchemaType
 
 from config import QDRANT_URL, QDRANT_API_KEY, QDRANT_COLLECTION
 from embed import embed
@@ -18,6 +18,16 @@ def _ensure_collection(client: QdrantClient):
             collection_name=QDRANT_COLLECTION,
             vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
         )
+    # Ensure full-text index on 'text' field exists (required for MatchText filters).
+    # This is idempotent — safe to call on every startup.
+    try:
+        client.create_payload_index(
+            collection_name=QDRANT_COLLECTION,
+            field_name="text",
+            field_schema=PayloadSchemaType.TEXT,
+        )
+    except Exception:
+        pass  # index already exists
 
 
 def _chunk_id(text: str) -> int:

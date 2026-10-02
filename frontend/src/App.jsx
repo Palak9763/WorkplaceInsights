@@ -1,6 +1,16 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import ChatView from "./components/ChatView";
 import UploadView from "./components/UploadView";
+import AuthModal from "./components/AuthModal";
+import {
+  getSavedUser,
+  fetchCurrentUserAPI,
+  clearAuthSession,
+  fetchConversationsAPI,
+  fetchMessagesAPI,
+  createConversationAPI,
+  deleteConversationAPI,
+} from "./api";
 
 // ── Icons ──────────────────────────────────────────────────────────────────
 const PlusIcon = () => (
@@ -20,18 +30,103 @@ const UploadIcon = () => (
     <line x1="12" y1="3" x2="12" y2="15"/>
   </svg>
 );
+const TrashIcon = () => (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+  </svg>
+);
+const UserIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+  </svg>
+);
+const LogoutIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+  </svg>
+);
 
 export default function App() {
   // "chat" | "upload"
   const [activeTab, setActiveTab] = useState("chat");
+
+  // Auth state
+  const [currentUser, setCurrentUser] = useState(() => getSavedUser());
+  const [isAuthOpen, setIsAuthOpen] = useState(false);
 
   // sessions: [{ id, label, history[] }]
   const [sessions, setSessions] = useState([]);
   // null = new unsaved chat; string = id of existing session
   const [activeSessionId, setActiveSessionId] = useState(null);
 
+  // Fetch initial profile & conversations
+  useEffect(() => {
+    async function initAuth() {
+      const user = await fetchCurrentUserAPI();
+      if (user) {
+        setCurrentUser(user);
+      }
+    }
+    initAuth();
+  }, []);
+
+  // Fetch conversations from MongoDB when logged in
+  useEffect(() => {
+    async function loadConversations() {
+      if (currentUser) {
+        const convs = await fetchConversationsAPI();
+        if (convs && convs.length > 0) {
+          const loadedSessions = convs.map(c => ({
+            id: c.id,
+            label: c.title,
+            history: [],
+          }));
+          setSessions(loadedSessions);
+        }
+      }
+    }
+    loadConversations();
+  }, [currentUser]);
+
   // Derived: history for the currently active session
   const activeHistory = sessions.find(s => s.id === activeSessionId)?.history ?? [];
+
+  // When switching to a session, load its messages from MongoDB if empty
+  async function handleSelectSession(id) {
+    setActiveSessionId(id);
+    setActiveTab("chat");
+
+    const session = sessions.find(s => s.id === id);
+    if (session && session.history.length === 0 && currentUser) {
+      try {
+        const msgs = await fetchMessagesAPI(id);
+        if (msgs && msgs.length > 0) {
+          // Reconstruct Q&A turns from alternating user/assistant messages
+          const turns = [];
+          for (let i = 0; i < msgs.length; i++) {
+            if (msgs[i].role === "user") {
+              const question = msgs[i].content;
+              const nextMsg = msgs[i + 1]?.role === "assistant" ? msgs[i + 1] : null;
+              turns.push({
+                question,
+                answer: nextMsg ? nextMsg.content : "",
+                classification: nextMsg?.metadata?.classification || "hybrid",
+                cypher_used: nextMsg?.metadata?.cypher_used || "",
+                graph_results: nextMsg?.metadata?.graph_results || [],
+                graph_result_count: nextMsg?.metadata?.graph_result_count,
+                vector_results: nextMsg?.metadata?.vector_results || [],
+                grounding_warning: nextMsg?.metadata?.grounding_warning || [],
+              });
+              if (nextMsg) i++; // skip assistant message
+            }
+          }
+          setSessions(prev => prev.map(s => s.id === id ? { ...s, history: turns } : s));
+        }
+      } catch (err) {
+        console.warn("Error fetching conversation messages:", err);
+      }
+    }
+  }
 
   // Called by ChatView when the user submits a message + gets a response
   const handleMessageAdded = useCallback((question, responseData) => {
@@ -57,7 +152,7 @@ export default function App() {
         );
       } else {
         // Create new session on first message
-        const id = Date.now().toString();
+        const id = responseData.conversation_id || Date.now().toString();
         const label = question.length > 42 ? question.slice(0, 42) + "…" : question;
         setActiveSessionId(id);
         return [{ id, label, history: [newTurn] }, ...prev];
@@ -65,14 +160,40 @@ export default function App() {
     });
   }, [activeSessionId]);
 
-  function handleNewChat() {
+  async function handleNewChat() {
+    if (currentUser) {
+      try {
+        const newConv = await createConversationAPI("New Conversation");
+        if (newConv && newConv.id) {
+          setSessions(prev => [{ id: newConv.id, label: newConv.title, history: [] }, ...prev]);
+          setActiveSessionId(newConv.id);
+          setActiveTab("chat");
+          return;
+        }
+      } catch (err) {
+        console.warn("Create conversation error:", err);
+      }
+    }
     setActiveSessionId(null);
     setActiveTab("chat");
   }
 
-  function handleSelectSession(id) {
-    setActiveSessionId(id);
-    setActiveTab("chat");
+  async function handleDeleteSession(e, id) {
+    e.stopPropagation();
+    if (currentUser) {
+      await deleteConversationAPI(id);
+    }
+    setSessions(prev => prev.filter(s => s.id !== id));
+    if (activeSessionId === id) {
+      setActiveSessionId(null);
+    }
+  }
+
+  function handleLogout() {
+    clearAuthSession();
+    setCurrentUser(null);
+    setSessions([]);
+    setActiveSessionId(null);
   }
 
   return (
@@ -121,23 +242,69 @@ export default function App() {
         </button>
 
         {/* Recent history */}
-        {sessions.length > 0 && (
-          <>
-            <div className="sidebar-section-label">Recent</div>
-            <div className="sidebar-history">
-              {sessions.map(s => (
-                <button
-                  key={s.id}
-                  className={`history-entry ${activeSessionId === s.id && activeTab === "chat" ? "active" : ""}`}
-                  onClick={() => handleSelectSession(s.id)}
-                  title={s.label}
-                >
-                  {s.label}
-                </button>
-              ))}
+        <div className="sidebar-history-container">
+          {sessions.length > 0 && (
+            <>
+              <div className="sidebar-section-label">Recent Chats</div>
+              <div className="sidebar-history">
+                {sessions.map(s => (
+                  <div
+                    key={s.id}
+                    className={`history-entry-wrapper ${activeSessionId === s.id && activeTab === "chat" ? "active" : ""}`}
+                    onClick={() => handleSelectSession(s.id)}
+                  >
+                    <button
+                      className="history-entry"
+                      title={s.label}
+                    >
+                      {s.label}
+                    </button>
+                    <button
+                      className="history-delete-btn"
+                      onClick={(e) => handleDeleteSession(e, s.id)}
+                      title="Delete chat"
+                    >
+                      <TrashIcon />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* ── User Profile / Login Footer ──────────────── */}
+        <div className="sidebar-footer">
+          {currentUser ? (
+            <div className="user-profile-badge">
+              <div className="user-avatar-circle">
+                {currentUser.avatar_url ? (
+                  <img src={currentUser.avatar_url} alt={currentUser.username} className="user-avatar-img" />
+                ) : (
+                  currentUser.username?.charAt(0).toUpperCase() || "U"
+                )}
+              </div>
+              <div className="user-info-text">
+                <span className="user-name-label">{currentUser.username || "User"}</span>
+                <span className="user-email-label">{currentUser.email || "Logged in"}</span>
+              </div>
+              <button
+                className="user-logout-btn"
+                onClick={handleLogout}
+                title="Sign out"
+              >
+                <LogoutIcon />
+              </button>
             </div>
-          </>
-        )}
+          ) : (
+            <button
+              className="sidebar-login-btn"
+              onClick={() => setIsAuthOpen(true)}
+            >
+              <UserIcon /> Sign In / Register
+            </button>
+          )}
+        </div>
       </aside>
 
       {/* ── Main ──────────────────────────────────── */}
@@ -145,11 +312,21 @@ export default function App() {
         {activeTab === "chat" && (
           <ChatView
             history={activeHistory}
+            activeSessionId={activeSessionId}
             onMessageAdded={handleMessageAdded}
           />
         )}
         {activeTab === "upload" && <UploadView />}
       </div>
+
+      {/* ── Auth Modal ─────────────────────────────── */}
+      <AuthModal
+        isOpen={isAuthOpen}
+        onClose={() => setIsAuthOpen(false)}
+        onAuthSuccess={(user) => {
+          setCurrentUser(user);
+        }}
+      />
     </div>
   );
 }
