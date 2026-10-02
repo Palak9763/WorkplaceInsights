@@ -7,9 +7,26 @@ Docs: http://localhost:8000/docs
 import time
 import asyncio
 from datetime import date
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from typing import Optional, List
+from fastapi import FastAPI, UploadFile, File, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
+
+from db_mongo import (
+    register_user,
+    authenticate_user,
+    handle_oauth_user,
+    decode_access_token,
+    get_user_by_id,
+    create_conversation,
+    list_conversations,
+    save_message,
+    get_conversation_messages,
+    delete_conversation,
+    log_query_analytics,
+    get_analytics_summary,
+    check_mongo_connection,
+)
 
 from parsers import parse_file
 from chunker import chunk_text
@@ -50,6 +67,45 @@ app.add_middleware(
 
 class QueryRequest(BaseModel):
     question: str
+    conversation_id: Optional[str] = None
+
+
+class UserRegisterRequest(BaseModel):
+    email: str
+    username: str
+    password: str
+
+
+class UserLoginRequest(BaseModel):
+    email_or_username: str
+    password: str
+
+
+class ConversationCreateRequest(BaseModel):
+    title: Optional[str] = "New Conversation"
+
+
+class OAuthLoginRequest(BaseModel):
+    provider: str  # "google" | "github"
+    email: Optional[str] = ""
+    name: Optional[str] = ""
+    provider_id: str
+    avatar_url: Optional[str] = ""
+    token_or_code: Optional[str] = ""
+
+
+def get_current_user_optional(authorization: Optional[str] = Header(None)) -> Optional[dict]:
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    token = authorization.split("Bearer ")[1].strip()
+    return decode_access_token(token)
+
+
+def get_current_user_required(authorization: Optional[str] = Header(None)) -> dict:
+    user = get_current_user_optional(authorization)
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required or token expired.")
+    return user
 
 
 # ---------------------------------------------------------------------------
@@ -97,10 +153,22 @@ async def ingest_file(file: UploadFile = File(...)):
 # /query  — fully data-agnostic pipeline with graph traversal & semantic retrieval
 # ---------------------------------------------------------------------------
 @app.post("/query")
-async def query_endpoint(request: QueryRequest):
+async def query_endpoint(request: QueryRequest, authorization: Optional[str] = Header(None)):
     question = request.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
+
+    # Identify user (if authenticated)
+    user = get_current_user_optional(authorization)
+    user_id = user["sub"] if user else "anonymous"
+    conv_id = request.conversation_id
+
+    # If conversation_id is provided or created, save user message
+    if conv_id:
+        try:
+            save_message(conv_id, user_id, "user", question)
+        except Exception as msg_err:
+            print(f"[mongo] Notice saving user message: {msg_err}")
 
     diagnostics: dict = {}  # per-stage errors + timings
 
@@ -307,7 +375,7 @@ async def query_endpoint(request: QueryRequest):
     print(f"  diagnostics:        {diagnostics}")
     print()
 
-    return {
+    response_payload = {
         "answer": answer,
         "classification": effective_classification,
         "anchors": anchors,
@@ -323,7 +391,147 @@ async def query_endpoint(request: QueryRequest):
         "grounding_warning": grounding_warning,
         "reasoning_provider_used": reasoning_provider_used,
         "diagnostics": diagnostics,
+        "conversation_id": conv_id,
     }
+
+    # Persist assistant response to MongoDB conversation
+    if conv_id:
+        try:
+            save_message(
+                conversation_id=conv_id,
+                user_id=user_id,
+                role="assistant",
+                content=answer,
+                metadata={
+                    "classification": effective_classification,
+                    "grounding_warning": grounding_warning,
+                    "reasoning_provider_used": reasoning_provider_used,
+                    "anchor_count": len(anchors),
+                }
+            )
+        except Exception as save_err:
+            print(f"[mongo] Notice saving assistant message: {save_err}")
+
+    # Log query analytics & performance metrics
+    try:
+        log_query_analytics(
+            question=question,
+            answer=answer,
+            route=effective_classification,
+            multihop=multihop,
+            anchors=anchors,
+            graph_facts_count=graph_result_count,
+            vector_chunks_count=len(vector_results),
+            provider=reasoning_provider_used,
+            diagnostics=diagnostics,
+            grounding_warnings=grounding_warning,
+            user_id=user_id,
+            conversation_id=conv_id,
+            status="success",
+        )
+    except Exception as log_err:
+        print(f"[mongo] Notice logging query analytics: {log_err}")
+
+    return response_payload
+
+
+# ---------------------------------------------------------------------------
+# Authentication Endpoints (JWT + MongoDB)
+# ---------------------------------------------------------------------------
+@app.post("/api/auth/register")
+async def register(req: UserRegisterRequest):
+    if len(req.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters.")
+    try:
+        return register_user(req.email, req.username, req.password)
+    except ValueError as val_err:
+        raise HTTPException(status_code=400, detail=str(val_err))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/auth/login")
+async def login(req: UserLoginRequest):
+    try:
+        return authenticate_user(req.email_or_username, req.password)
+    except ValueError as val_err:
+        raise HTTPException(status_code=401, detail=str(val_err))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/auth/me")
+async def get_me(user: dict = Depends(get_current_user_required)):
+    user_data = get_user_by_id(user["sub"])
+    if not user_data:
+        raise HTTPException(status_code=404, detail="User not found.")
+    return user_data
+
+
+@app.post("/api/auth/oauth")
+async def oauth_login(req: OAuthLoginRequest):
+    if req.provider not in ("google", "github"):
+        raise HTTPException(status_code=400, detail="Unsupported OAuth provider.")
+    if not req.provider_id:
+        raise HTTPException(status_code=400, detail="Missing provider ID.")
+
+    try:
+        return handle_oauth_user(
+            provider=req.provider,
+            email=req.email or "",
+            name=req.name or "",
+            provider_id=req.provider_id,
+            avatar_url=req.avatar_url or "",
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Persistent Chat History Endpoints
+# ---------------------------------------------------------------------------
+@app.get("/api/conversations")
+async def get_conversations(user: dict = Depends(get_current_user_required)):
+    return list_conversations(user_id=user["sub"])
+
+
+@app.post("/api/conversations")
+async def create_new_conversation(
+    req: ConversationCreateRequest,
+    user: dict = Depends(get_current_user_required)
+):
+    return create_conversation(user_id=user["sub"], title=req.title or "New Conversation")
+
+
+@app.get("/api/conversations/{conversation_id}/messages")
+async def get_messages(
+    conversation_id: str,
+    user: dict = Depends(get_current_user_required)
+):
+    return get_conversation_messages(conversation_id)
+
+
+@app.delete("/api/conversations/{conversation_id}")
+async def delete_conversation_endpoint(
+    conversation_id: str,
+    user: dict = Depends(get_current_user_required)
+):
+    success = delete_conversation(conversation_id, user["sub"])
+    return {"success": success}
+
+
+# ---------------------------------------------------------------------------
+# Query Analytics & Monitoring
+# ---------------------------------------------------------------------------
+@app.get("/api/analytics")
+async def get_analytics():
+    return get_analytics_summary()
+
+
+@app.get("/api/health/mongo")
+async def mongo_health():
+    is_ok, msg = check_mongo_connection()
+    return {"connected": is_ok, "message": msg}
 
 
 @app.get("/health")

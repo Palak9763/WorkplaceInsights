@@ -101,46 +101,87 @@ def _call_reasoning_llm(system_prompt: str, user_prompt: str) -> tuple[str, str]
     Provider-agnostic LLM call for answer synthesis.
 
     Returns (response_text, provider_used) where provider_used is one of:
-      "groq"   — Groq Cloud was used successfully
+      "groq"   — Groq Cloud (Llama / Qwen) was used successfully
       "google" — Google AI Studio (Gemini) was used successfully
       "ollama" — Local Ollama was used (either as primary or as fallback)
 
     Fallback logic:
-      Any provider failure falls back to local Ollama for this request only.
-      Every fallback is always logged.
+      If REASONING_PROVIDER=groq or google but the key is missing or the call
+      fails (HTTP error, timeout, safety block), logs a clear WARNING and falls
+      back to local Ollama for this request.
+      Never silently swallows errors — every fallback is always logged.
     """
-    # ── Groq path ────────────────────────────────────────────────────────────
+    # ── Groq Cloud path ─────────────────────────────────────────────────────
     if config.REASONING_PROVIDER == "groq":
         if not config.GROQ_API_KEY:
             print(
                 "[reasoning] WARNING: REASONING_PROVIDER=groq but GROQ_API_KEY "
-                "is empty. Falling back to local Ollama."
+                "is empty in .env. Falling back to local Ollama."
             )
         else:
+            url = f"{config.GROQ_BASE_URL}/chat/completions"
+            payload = json.dumps({
+                "model": config.GROQ_MODEL,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": config.REASONING_TEMPERATURE or 0.1,
+            }).encode()
+
+            req = urllib.request.Request(
+                url,
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {config.GROQ_API_KEY}",
+                    "User-Agent": "WorkplaceInsights/1.0",
+                },
+                method="POST",
+            )
+
             print(
                 f"[reasoning] Calling Groq ({config.GROQ_MODEL}) "
                 f"with timeout={config.REASONING_TIMEOUT_S}s"
             )
             try:
-                client = Groq(api_key=config.GROQ_API_KEY)
-                completion = client.chat.completions.create(
-                    model=config.GROQ_MODEL,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user",   "content": user_prompt},
-                    ],
-                    temperature=config.REASONING_TEMPERATURE,
-                    timeout=config.REASONING_TIMEOUT_S,
+                with urllib.request.urlopen(
+                    req, timeout=config.REASONING_TIMEOUT_S
+                ) as resp:
+                    data = json.loads(resp.read())
+
+                choices = data.get("choices", [])
+                if not choices:
+                    print(
+                        "[reasoning] WARNING: Groq returned no choices. "
+                        "Falling back to local Ollama."
+                    )
+                else:
+                    text = choices[0]["message"]["content"].strip()
+                    print(f"[reasoning] Groq call succeeded ({len(text)} chars).")
+                    return text, "groq"
+
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode(errors="replace") if exc.fp else ""
+                print(
+                    f"[reasoning] WARNING: Groq HTTP error {exc.code}: {body[:300]}. "
+                    "Falling back to local Ollama."
                 )
-                text = completion.choices[0].message.content.strip()
-                print(f"[reasoning] Groq call succeeded ({len(text)} chars).")
-                return text, "groq"
+            except urllib.error.URLError as exc:
+                print(
+                    f"[reasoning] WARNING: Groq network error: {exc.reason}. "
+                    "Falling back to local Ollama."
+                )
+            except TimeoutError:
+                print(
+                    f"[reasoning] WARNING: Groq call timed out after "
+                    f"{config.REASONING_TIMEOUT_S}s. Falling back to local Ollama."
+                )
             except Exception as exc:
                 print(
                     f"[reasoning] WARNING: Groq call failed: {exc}. "
                     "Falling back to local Ollama."
                 )
-
     # ── Google AI Studio path ───────────────────────────────────────────────
     if config.REASONING_PROVIDER == "google":
         if not config.GOOGLE_API_KEY:

@@ -18,6 +18,15 @@ QDRANT_URL = os.getenv("QDRANT_URL", "")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "graphrag_chunks")
 
+# --- MongoDB (Chat History, Users & Analytics) ---
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "workplace_insights")
+
+# --- JWT Authentication ---
+JWT_SECRET = os.getenv("JWT_SECRET", "workplace_insights_super_secret_jwt_key_change_in_prod")
+JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+JWT_EXPIRES_MINUTES = int(os.getenv("JWT_EXPIRES_MINUTES", "1440"))  # 24 hours
+
 # --- Ollama ---
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
@@ -26,20 +35,23 @@ EXTRACTION_MODEL = os.getenv("EXTRACTION_MODEL", "qwen2.5:3b-instruct")
 REASONING_MODEL = os.getenv("REASONING_MODEL", EXTRACTION_MODEL)
 
 # --- Reasoning provider ---
-# REASONING_PROVIDER="ollama"  → local Ollama (default / fallback)
+# REASONING_PROVIDER="groq"   → Groq Cloud (ultra-fast cloud inference)
 # REASONING_PROVIDER="google" → Google AI Studio (Gemini)
-# REASONING_PROVIDER="groq"   → Groq Cloud (ultra-fast inference)
+# REASONING_PROVIDER="ollama" → local Ollama (default / fallback)
 # All other pipeline steps (embed, extract, classify, cypher) always run on Ollama.
-REASONING_PROVIDER = os.getenv("REASONING_PROVIDER", "ollama")  # "ollama" | "google" | "groq"
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
-GOOGLE_MODEL = os.getenv("GOOGLE_MODEL", "gemini-3.5-flash")
-GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
-REASONING_TEMPERATURE = float(os.getenv("REASONING_TEMPERATURE", "0"))
-REASONING_TIMEOUT_S = float(os.getenv("REASONING_TIMEOUT_S", "40"))
+REASONING_PROVIDER = os.getenv("REASONING_PROVIDER", "groq")  # "groq" | "google" | "ollama"
 
 # --- Groq ---
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b")
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+
+# --- Google AI Studio ---
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
+GOOGLE_MODEL = os.getenv("GOOGLE_MODEL", "gemini-3.8-flash")
+GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+REASONING_TEMPERATURE = float(os.getenv("REASONING_TEMPERATURE", "0"))
+REASONING_TIMEOUT_S = float(os.getenv("REASONING_TIMEOUT_S", "40"))
 
 # --- Query pipeline tunables ---
 # Schema cache time-to-live (seconds) — 5 min avoids repeated Neo4j schema queries
