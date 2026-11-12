@@ -1,5 +1,4 @@
 # Extraction Pipeline — Step 2
-
 Builds on your verified Neo4j Desktop + Qdrant connections. This is the
 actual ingestion pipeline: real text -> LLM extraction -> both store.
 
